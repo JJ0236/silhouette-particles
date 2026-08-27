@@ -1,7 +1,7 @@
 {
   "name": "silhouette-particles",
   "productName": "Silhouette Particles",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": false,
   "description": "Camera-behind-viewer projection installation: your silhouette and a particle field you push, using occlusion segmentation against the known projected frame.",
   "type": "module",

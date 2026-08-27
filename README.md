@@ -16,6 +16,30 @@ It has to be served over `http://localhost` — the camera needs a secure contex
 `file://` isn't one. Nothing leaves the machine; the segmentation model and its runtime
 are vendored in `vendor/`, so it runs with the network unplugged.
 
+## Calibrating: press one button
+
+`C` → **Calibrate everything**. It measures the display latency, then the
+screen's shape, then its brightness, then checks the piece cannot see its own
+output, and prints what it found. About a minute, no input, nobody in front of
+the screen.
+
+The order is forced by dependency rather than preference: structured light has
+to know when a pattern reaches the camera, photometry is measured per display
+cell so it needs the geometry first, and the loop check comes last because it is
+the only step that confirms a result rather than producing one.
+
+Latency is measured by modulating the whole screen and reading the whole sensor,
+so it needs no geometry — which is what makes the chain able to bootstrap
+itself. That does provoke auto-exposure, unlike the patch-based version used
+later, but it does not matter: AE reacts over hundreds of milliseconds while the
+m-sequence carries its energy far faster, and correlating against a
+pseudo-random sequence ignores slow drift by construction.
+
+The report includes **how much of the sensor the screen occupies**. If that is
+small, the detector grid is being upscaled from very few camera pixels and no
+software will recover detail that was never captured — move the camera closer or
+zoom in.
+
 ## Curved and multi-projector screens
 
 The geometry step measures the display→camera mapping with **gray-code

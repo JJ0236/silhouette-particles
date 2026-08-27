@@ -176,7 +176,7 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   const api = {
     paintFrame, paintFloor,
     runLatency, runPhotometric, runRegistration, runLoopCheck, runStandIn, runStructured,
-    loadMap, storeMap,
+    loadMap, storeMap, runAuto, runLatencyGlobal,
     get hasGeometry() { return warp.hasMap; },
     cancel, loadStored, expectedMeta,
     onProgress: onProgress ?? null,
@@ -268,6 +268,56 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
     return endPaint();
   }
 
+  // Latency, measured before any geometry exists.
+  //
+  // The patch-based latency pass reads through the calibrated region, which
+  // makes it useless for bootstrapping: structured light needs the latency, and
+  // the latency needed the geometry. This one modulates the WHOLE screen and
+  // reads the whole sensor, so it needs nothing but a camera pointed roughly at
+  // the display.
+  //
+  // Modulating everything does provoke auto-exposure, which the patch version
+  // was designed to avoid. It does not matter here: AE reacts over hundreds of
+  // milliseconds while the m-sequence carries most of its energy far faster, and
+  // correlating against a pseudo-random sequence ignores slow drift by
+  // construction. What AE costs is a little amplitude, not the position of the
+  // peak.
+  function runLatencyGlobal({ lo = 0.25, hi = 0.85, holdFrames = 2, reps = 2 } = {}) {
+    return run(async () => {
+      const seq = mSequence(6);
+      const steps = seq.length * holdFrames * reps;
+      const emitted = [], observed = [];
+      const ok = await drive({
+        steps: steps + PREROLL,
+        phase: 'latency',
+        full: 192,
+        paint: (i) => {
+          const k = i - PREROLL;
+          const s = k < 0 ? 1 : seq[Math.floor(k / holdFrames) % seq.length];
+          const level = Math.round(255 * (s > 0 ? hi : lo));
+          beginPaint();
+          ctx.fillStyle = `rgb(${level},${level},${level})`;
+          ctx.fillRect(0, 0, view.width, view.height);
+          const t = endPaint();
+          if (k >= 0) emitted.push({ t, s });
+        },
+        onCam: (luma, tCam) => {
+          let sum = 0;
+          for (let i = 0; i < luma.length; i++) sum += luma[i];
+          observed.push({ t: tCam, y: sum / luma.length });
+        },
+        tailMs: 400,
+      });
+      if (!ok || emitted.length < 8 || observed.length < 8) return null;
+      const r = crossCorrelate(emitted, observed, { minLagMs: 0, maxLagMs: 500, stepMs: 4 });
+      if (r && Number.isFinite(r.lagMs)) {
+        settings.lagMs = Math.round(r.lagMs);
+        save();
+      }
+      return r;
+    });
+  }
+
   // Measure the display->camera correspondence with gray-code structured light.
   //
   // This supersedes the four-corner homography, which is exact only for a flat
@@ -323,6 +373,73 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
     });
   }
 
+  // One button for the whole rig.
+  //
+  // Order is forced by dependency, not preference: latency first because
+  // structured light must know when a pattern reaches the camera, geometry
+  // second because photometry is measured per display cell, photometry third,
+  // and the loop check last because it is the only step that can confirm the
+  // result rather than produce it.
+  function runAuto() {
+    return run(async () => {
+      const report = { steps: [] };
+      const step = (name, value, ok, note) => report.steps.push({ name, value, ok, note });
+
+      const lat = await runLatencyGlobal();
+      if (cancelled) return null;
+      const lagOk = !!lat && lat.confidence > 0.25;
+      step('latency', lat ? `${Math.round(lat.lagMs)} ms` : 'failed', lagOk,
+        lagOk ? `confidence ${(lat.confidence * 100).toFixed(0)}%`
+              : 'weak correlation — is the camera pointed at the screen?');
+      report.lag = lat;
+
+      const map = await runStructured();
+      if (cancelled) return null;
+      const mapOk = !!map && map.coverage > 0.05;
+      step('geometry', map ? `${(map.coverage * 100).toFixed(0)}% seen directly` : 'failed', mapOk,
+        mapOk ? screenNote(map) : 'no patterns decoded — room too bright, or the screen is out of frame');
+      report.map = map;
+
+      let photo = null;
+      if (mapOk) {
+        photo = await runPhotometric();
+        if (cancelled) return null;
+        step('photometry', photo ? 'measured' : 'failed', !!photo,
+          photo ? `${(photoStats(photo).observableFrac * 100).toFixed(0)}% of cells usable` : '');
+        report.photo = photo;
+      }
+
+      if (photo) {
+        const loop = await runLoopCheck({ seconds: 4 });
+        if (cancelled) return null;
+        step('loop check', loop ? `${(loop.peak * 100).toFixed(2)}% peak` : 'failed',
+          !!loop && loop.pass, loop?.pass ? 'the piece cannot see itself' : 'false detection with nobody present');
+        report.loop = loop;
+      }
+
+      report.ok = report.steps.every((s) => s.ok);
+      return report;
+    });
+  }
+
+  // How much of the sensor the screen actually occupies. If this is small the
+  // grid is being upscaled from very few camera pixels, and no amount of
+  // software will recover detail that was never captured — the camera needs to
+  // be closer or zoomed.
+  function screenNote(map) {
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+    for (let i = 0; i < map.mapU.length; i++) {
+      if (!map.valid[i]) continue;
+      const u = map.mapU[i], v = map.mapV[i];
+      if (u < x0) x0 = u; if (u > x1) x1 = u;
+      if (v < y0) y0 = v; if (v > y1) y1 = v;
+    }
+    const fw = Math.max(0, x1 - x0), fh = Math.max(0, y1 - y0);
+    const px = Math.round(fw * (camera.settings?.width ?? 1920));
+    const warn = fw < 0.35 ? ' — small in frame; consider moving the camera closer or zooming in' : '';
+    return `screen fills ${(fw * 100).toFixed(0)}% x ${(fh * 100).toFixed(0)}% of the sensor (~${px}px wide)${warn}`;
+  }
+
   // What the idle piece emits: black plus the void floor. Painted after every
   // pass so the ring's newest entries describe what is actually on the wall
   // when main.js resumes, and used as the stand-in background.
@@ -345,13 +462,31 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   // last step the display holds while camera frames keep arriving for
   // `tailMs`, so the frames still in flight through the lag get counted.
   // Resolves true on completion, false when cancelled.
-  function drive({ steps, durationMs, tailMs = 0, paint, onCam, phase: ph }) {
+  function drive({ steps, durationMs, tailMs = 0, paint, onCam, phase: ph, full = 0 }) {
     phase = ph;
     return new Promise((resolve) => {
       let i = 0, raf = 0, lastPaint = -Infinity, t0 = 0, tailStart = 0;
       let done = false;
+      // `full` samples the raw sensor frame instead of the calibrated region,
+      // for passes that must run BEFORE any geometry exists.
+      let fc = null, fctx = null, fbuf = null;
+      if (full) {
+        fc = document.createElement('canvas');
+        fc.width = full; fc.height = Math.max(2, Math.round(full * 9 / 16));
+        fctx = fc.getContext('2d', { willReadFrequently: true });
+        fbuf = new Float32Array(fc.width * fc.height);
+      }
       const off = camera.onFrame((tCam) => {
         if (done || cancelled) return;
+        if (full) {
+          if (!camera.drawFull(fctx, fc.width, fc.height)) return;
+          const d = fctx.getImageData(0, 0, fc.width, fc.height).data;
+          for (let i = 0, o = 0; i < fbuf.length; i++, o += 4) {
+            fbuf[i] = lumaOf(d[o], d[o + 1], d[o + 2]) / 255;
+          }
+          onCam(fbuf, tCam, fc.width, fc.height);
+          return;
+        }
         if (!warp.sampleGrid(camera, calib.H, settings.mirror, obs)) return;
         onCam(obs, tCam);
       });

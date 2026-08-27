@@ -90,6 +90,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       case 'skip':   showStep(step + 1); break;
       case 'start':  fireStart(); break;
       case 'measure': runGeometry(); break;
+      case 'auto': runAutoAll(); break;
       case 'corners': manualCorners = true; renderCorners(); break;
       case 'retry':  showStep(step); break;
       case 'reset':  calib.reset(); break;
@@ -155,27 +156,67 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   let manualCorners = false;
   let geoResult = null;
 
+  async function runAutoAll() {
+    const g = gen;
+    enable('auto', false); enable('measure', false); enable('corners', false);
+    root.classList.add('dark');
+    let rep = null;
+    try {
+      rep = await photocal.runAuto();
+    } catch (e) {
+      console.warn('[calibrate] auto failed:', e);
+    }
+    root.classList.remove('dark');
+    if (stale(g)) return;
+    const card = bodyEl.querySelector('.calib-card');
+    if (!rep) {
+      card.innerHTML = '<div class="calib-warn">Cancelled.</div>';
+      renderGeometryActions();
+      return;
+    }
+    const rows = rep.steps.map((st) =>
+      `<div class="calib-row ${st.ok ? 'ok' : 'bad'}"><b>${st.name}</b>
+         <span>${st.value}</span><i>${st.note ?? ''}</i></div>`).join('');
+    card.innerHTML = `<div class="${rep.ok ? 'calib-ok' : 'calib-warn'}">
+        ${rep.ok ? 'Calibrated' : 'Finished with problems'}</div>${rows}`;
+    if (rep.ok) onPhoto?.(rep.photo);
+    setActions([
+      ...(rep.ok ? [{ act: 'save', label: 'Done', primary: true }] : []),
+      { act: 'auto', label: 'Run again', primary: !rep.ok },
+      { act: 'corners', label: 'Mark corners instead' },
+      { act: 'cancel', label: 'Cancel' },
+    ]);
+  }
+
+  function renderGeometryActions() {
+    setActions([
+      { act: 'auto', label: 'Calibrate everything', primary: true },
+      { act: 'measure', label: 'Screen geometry only' },
+      { act: 'corners', label: 'Mark corners instead' },
+      ...(photocal.hasGeometry ? [{ act: 'next', label: 'Next: photometric' }] : []),
+      { act: 'cancel', label: 'Cancel' },
+    ]);
+  }
+
   function renderGeometry() {
     canvas.hidden = true;
     root.classList.add('run');
     bodyEl.innerHTML = `
-      <p class="calib-big">Measure the screen.</p>
+      <p class="calib-big">Calibrate. Stand clear of the screen.</p>
       <p>The display flashes about forty patterns, roughly three seconds, and
          reads back which part of the screen the camera sees where. This
          replaces dragging corners and works on a curved or multi-projector
          screen, where four corners cannot: a corner fit assumes the surface is
          flat, and on a 120° screen that is around nine cells out in the middle
          — exactly where people stand.</p>
-      <p>Nothing between the camera and the screen while it runs.</p>
+      <p><b>Calibrate everything</b> measures latency, then the screen's shape,
+         then its brightness, then checks the piece cannot see its own output —
+         about a minute, no input needed. Nothing between the camera and the
+         screen while it runs.</p>
       <div class="calib-count"></div>
       <div class="calib-progress"><div class="bar"></div></div>
       <div class="calib-card"></div>`;
-    setActions([
-      { act: 'measure', label: 'Measure screen', primary: true },
-      { act: 'corners', label: 'Use corners instead' },
-      ...(photocal.hasGeometry ? [{ act: 'next', label: 'Next: photometric' }] : []),
-      { act: 'cancel', label: 'Cancel' },
-    ]);
+    renderGeometryActions();
   }
 
   async function runGeometry() {

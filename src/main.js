@@ -118,10 +118,28 @@ function onCameraFrame(tCam) {
   if (camAcc > 500) { camFps = Math.round(camFrames * 1000 / camAcc); camFrames = 0; camAcc = 0; }
 }
 
+// The packaged app grants the camera itself, so a failure there is a real
+// fault — a camera in use by something else, unplugged, or blocked by Windows
+// privacy settings — not a permission prompt the user needs to click. Telling a
+// Windows user to open Safari settings sends them somewhere that does not exist.
+function cameraHelp() {
+  const packaged = typeof window !== 'undefined' && !!window.installation;
+  if (packaged) {
+    return 'No camera. Check it is plugged in, not in use by another app, and '
+         + 'allowed under Windows Settings → Privacy & security → Camera. '
+         + 'Press D to pick a different camera.';
+  }
+  const ua = navigator.userAgent;
+  const isSafari = /Safari/.test(ua) && !/Chrome|Chromium|Edg/.test(ua);
+  return isSafari
+    ? 'Camera blocked. Allow it in Safari → Settings for This Website, then reload.'
+    : 'Camera blocked. Allow camera access for this site, then reload.';
+}
+
 async function begin(silent) {
   if (!silent) overlayMsg.textContent = 'starting camera…';
   if (!await startCamera(null)) {
-    if (!silent) overlayMsg.textContent = 'Camera blocked. Allow it in Safari → Settings for This Website, then reload.';
+    if (!silent) overlayMsg.textContent = cameraHelp();
     return false;
   }
   overlay.hidden = true;
