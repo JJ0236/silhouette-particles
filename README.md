@@ -40,6 +40,30 @@ small, the detector grid is being upscaled from very few camera pixels and no
 software will recover detail that was never captured — move the camera closer or
 zoom in.
 
+### If the screen barely decodes
+
+The failure that matters is auto-exposure. Using a full-white and a full-black
+frame as the contrast reference is the worst possible choice: those are the two
+frames AE fights hardest, stopping down on one and opening up on the other, so
+both come back at similar brightness and their difference collapses. On a real
+rig that left about **1% of the screen** readable.
+
+Contrast is therefore measured from the pattern PAIRS. A pattern and its inverse
+have identical average brightness, so AE cannot tell them apart and cannot
+flatten the difference between them. Each bit is also judged against what that
+pixel has shown it can swing, so a dim edge of a curved screen is measured by
+its own standard rather than the bright centre's.
+
+The wizard reports the pattern response either way. If the strongest response is
+below threshold the camera never saw the patterns — the screen is out of frame
+or room light is swamping the projector. If the response is strong but coverage
+is poor, the latency estimate is wrong and decoding is landing on the wrong
+pattern. Those need opposite fixes, which is why the number is shown.
+
+**Show white field** puts a flat white screen up for white-balancing a camera by
+eye and for judging the room: if white and black look similar on the wall, no
+software will separate them.
+
 ## Curved and multi-projector screens
 
 The geometry step measures the display→camera mapping with **gray-code

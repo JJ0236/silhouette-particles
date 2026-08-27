@@ -111,3 +111,46 @@ test('cells the camera cannot see are marked, not invented', () => {
   assert.equal(map.coverage, 0, 'nothing should be claimed as measured');
   assert.ok(map.valid.every((v) => v === 0));
 });
+
+test('decodes through auto-exposure that flattens white against black', () => {
+  // The real failure: the camera stops down on a full-white frame and opens up
+  // on a full-black one, so white-minus-black comes back near zero and almost
+  // the whole screen looks unreadable. On the rig it left ~1% usable.
+  //
+  // Here AE is modelled as a gain that normalises each frame toward a fixed
+  // mean brightness — the worst case for a white/black reference, and harmless
+  // for a pattern and its inverse, which have the same mean by construction.
+  const w = 96, h = 54, camW = 160, camH = 120;
+  const truth = curvedCamera(w, h, camW, camH);
+  const owner = new Int32Array(camW * camH).fill(-1);
+  for (let dy = 0; dy < h; dy++) {
+    for (let dx = 0; dx < w; dx++) {
+      const [cu, cv] = truth(dx / (w - 1), dy / (h - 1));
+      const cx = Math.round(cu * (camW - 1)), cy = Math.round(cv * (camH - 1));
+      if (cx >= 0 && cx < camW && cy >= 0 && cy < camH) owner[cy * camW + cx] = dy * w + dx;
+    }
+  }
+  const dec = createDecoder({ w, h, camW, camH, holdFrames: 1 });
+  const disp = new Uint8Array(w * h);
+  const cam = new Float32Array(camW * camH);
+  const seq = dec.sequence;
+  const TARGET = 0.35;
+  for (let i = 0; i < seq.length; i++) {
+    const spec = seq.frame(i);
+    patternFor(spec, w, h, disp);
+    let sum = 0;
+    for (let p = 0; p < owner.length; p++) {
+      const d = owner[p];
+      cam[p] = d < 0 ? 0.10 : (disp[d] / 255) * 0.8 + 0.08;
+      sum += cam[p];
+    }
+    // Auto-exposure: rescale so every frame reads the same average.
+    const gain = TARGET / Math.max(1e-6, sum / cam.length);
+    for (let p = 0; p < cam.length; p++) cam[p] = Math.min(1, cam[p] * gain);
+    dec.add(spec, cam);
+  }
+  const map = smoothMap(dec.finish({ minContrast: 0.04 }), 1);
+  assert.ok(map.coverage > 0.25,
+    `AE flattened the read: only ${(map.coverage * 100).toFixed(1)}% decoded ` +
+    `(contrast p50 ${map.contrast.p50.toFixed(3)})`);
+});

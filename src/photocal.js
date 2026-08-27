@@ -176,7 +176,7 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   const api = {
     paintFrame, paintFloor,
     runLatency, runPhotometric, runRegistration, runLoopCheck, runStandIn, runStructured,
-    loadMap, storeMap, runAuto, runLatencyGlobal,
+    loadMap, storeMap, runAuto, runLatencyGlobal, holdField,
     get hasGeometry() { return warp.hasMap; },
     cancel, loadStored, expectedMeta,
     onProgress: onProgress ?? null,
@@ -330,7 +330,14 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   // there is no calibrated region yet — establishing one is the point.
   function runStructured({ camW = 320, camH = 180 } = {}) {
     return run(async () => {
-      const dec = createDecoder({ w: MASK_W, h: MASK_H, camW, camH, holdFrames: 2 });
+      // Hold each pattern long enough that a wrong latency estimate still lands
+      // inside the right hold. Two frames was far too tight: if the measured lag
+      // is off by even one camera frame, every capture is attributed to the
+      // previous pattern and the decode is noise. Roughly 180 ms per pattern
+      // tolerates being wrong by ±80 ms, which is more than the estimator ever
+      // is, and costs about six seconds for the whole sequence.
+      const holdFrames = 11;
+      const dec = createDecoder({ w: MASK_W, h: MASK_H, camW, camH, holdFrames });
       const seq = dec.sequence;
       const luma = new Float32Array(camW * camH);
       const painted = [];
@@ -349,9 +356,13 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
         },
         onCam: (_obs, tCam) => {
           // Attribute the frame to whatever was on the wall when it was
-          // exposed, which is one display latency ago.
-          const rec = specAt(painted, tCam - (settings.lagMs || 0));
-          if (!rec || rec.settle) return;
+          // exposed, which is one display latency ago — and only believe it if
+          // that pattern had already been up for a moment, so a frame captured
+          // across a transition is discarded rather than misread.
+          const at = tCam - (settings.lagMs || 0);
+          const rec = specAt(painted, at);
+          const since = paintedAgeAt(painted, at);
+          if (!rec || rec.settle || since < SETTLE_MS) return;
           if (!camera.drawFull(fctx, camW, camH)) return;
           const d = fctx.getImageData(0, 0, camW, camH).data;
           for (let i = 0, o = 0; i < luma.length; i++, o += 4) {
@@ -438,6 +449,17 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
     const px = Math.round(fw * (camera.settings?.width ?? 1920));
     const warn = fw < 0.35 ? ' — small in frame; consider moving the camera closer or zooming in' : '';
     return `screen fills ${(fw * 100).toFixed(0)}% x ${(fh * 100).toFixed(0)}% of the sensor (~${px}px wide)${warn}`;
+  }
+
+  // Hold a flat field on the screen. Used for white balancing a camera by eye,
+  // and for judging whether the room light is swamping the projector before
+  // blaming the software.
+  function holdField(level = 255) {
+    beginPaint();
+    const v = clamp(level | 0, 0, 255);
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.fillRect(0, 0, view.width, view.height);
+    return endPaint();
   }
 
   // What the idle piece emits: black plus the void floor. Painted after every
@@ -597,6 +619,15 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   }
 
   const PREROLL = 30;   // frames at the pass's APL before recording — AE settle
+  const SETTLE_MS = 60; // a pattern must have been up this long before a frame counts
+
+  // How long the spec in force at time t had already been showing.
+  function paintedAgeAt(painted, t) {
+    for (let k = painted.length - 1; k >= 0; k--) {
+      if (painted[k].t <= t) return t - painted[k].t;
+    }
+    return 0;
+  }
 
   // ---- latency --------------------------------------------------------------
 

@@ -91,6 +91,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       case 'start':  fireStart(); break;
       case 'measure': runGeometry(); break;
       case 'auto': runAutoAll(); break;
+      case 'white': toggleWhite(); break;
       case 'corners': manualCorners = true; renderCorners(); break;
       case 'retry':  showStep(step); break;
       case 'reset':  calib.reset(); break;
@@ -191,6 +192,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   function renderGeometryActions() {
     setActions([
       { act: 'auto', label: 'Calibrate everything', primary: true },
+      { act: 'white', label: whiteOn ? 'Stop white field' : 'Show white field' },
       { act: 'measure', label: 'Screen geometry only' },
       { act: 'corners', label: 'Mark corners instead' },
       ...(photocal.hasGeometry ? [{ act: 'next', label: 'Next: photometric' }] : []),
@@ -198,8 +200,24 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     ]);
   }
 
+  // A flat white field, for white-balancing the camera and for judging by eye
+  // whether the room light is swamping the projector. If white and black look
+  // similar on the wall, no amount of software will separate them.
+  let whiteOn = false;
+  function toggleWhite() {
+    whiteOn = !whiteOn;
+    if (whiteOn) {
+      photocal.holdField(255);
+      whiteTimer = setInterval(() => photocal.holdField(255), 200);
+    } else {
+      clearInterval(whiteTimer); whiteTimer = 0;
+    }
+    renderGeometryActions();
+  }
+  let whiteTimer = 0;
+
   function renderGeometry() {
-    canvas.hidden = true;
+    canvas.hidden = false;   // the live camera view stays up while aiming
     root.classList.add('run');
     bodyEl.innerHTML = `
       <p class="calib-big">Calibrate. Stand clear of the screen.</p>
@@ -236,9 +254,12 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     const card = bodyEl.querySelector('.calib-card');
     if (map && map.coverage > 0.05) {
       const pct = (map.coverage * 100).toFixed(0);
+      const c = map.contrast;
       card.innerHTML = `<div class="calib-ok">Screen measured</div>
         <div>${pct}% of the display was seen directly; the rest was filled in from
-             its neighbours, which is sound because a physical surface is smooth.</div>`;
+             its neighbours, which is sound because a physical surface is smooth.</div>
+        <div class="calib-sub">pattern response: median ${(c.p50 * 100).toFixed(1)}%,
+             strongest ${(c.max * 100).toFixed(1)}%</div>`;
       setActions([
         { act: 'next', label: 'Next: photometric', primary: true },
         { act: 'measure', label: 'Measure again' },
@@ -246,10 +267,17 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
         { act: 'cancel', label: 'Cancel' },
       ]);
     } else {
+      const c = map?.contrast;
+      const detail = c
+        ? `Strongest response was ${(c.max * 100).toFixed(1)}% and the median pixel
+           ${(c.p50 * 100).toFixed(1)}%, against a ${(c.threshold * 100).toFixed(0)}% threshold.`
+        : '';
+      const why = !c ? ''
+        : c.max < c.threshold
+          ? 'The camera barely saw the patterns at all — the screen is probably out of frame, or room light is swamping the projector. Try the white field button: if white and black look similar on the wall, no software can separate them.'
+          : 'The camera saw the patterns but could not decode them, which usually means the latency estimate is wrong. Run Calibrate everything, which measures latency first.';
       card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>
-        <div>Usually the room is too bright, the camera is not pointed at the
-             screen, or the display latency has not been measured yet. You can
-             fall back to marking four corners, which works on a flat screen.</div>`;
+        <div>${detail}</div><div>${why}</div>`;
       setActions([
         { act: 'measure', label: 'Try again', primary: true },
         { act: 'corners', label: 'Use corners instead' },
@@ -604,6 +632,9 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   // grid, whose aspect is fixed by the capture size.
   function draw(displayAspect) {
     if (!active || step !== 1) return;
+    // The white field owns the screen while it is up; redrawing over it would
+    // defeat the point of showing it.
+    if (whiteOn) return;
     const w = window.innerWidth, h = window.innerHeight;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
 
@@ -617,6 +648,19 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     const s = Math.min(w / vw, h / vh);
     fit = { w: vw * s, h: vh * s, x: (w - vw * s) / 2, y: (h - vh * s) / 2 };
     ctx.drawImage(camera.video, fit.x, fit.y, fit.w, fit.h);
+
+    // Structured light needs no quad, so the preview stays clean: this view
+    // exists to aim the camera, and handles over it only invite dragging them.
+    if (!manualCorners) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(fit.x, fit.y + fit.h - 34, fit.w, 34);
+      ctx.fillStyle = 'rgba(159,232,255,0.9)';
+      ctx.font = '13px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('live camera — aim so the screen fills as much of this as possible',
+                   fit.x + fit.w / 2, fit.y + fit.h - 17);
+      return;
+    }
 
     // Dim outside the quad so the marked region reads clearly.
     const q = calib.quad.map(([u, v]) => [fit.x + u * fit.w, fit.y + v * fit.h]);

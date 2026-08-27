@@ -18,6 +18,10 @@
 // at most one bit and lands on a neighbouring cell, instead of a plain-binary
 // carry flipping every bit at once and landing somewhere arbitrary.
 
+// A bit must swing at least this much absolutely, and at least this fraction of
+// what the pixel has shown it can swing, before it is believed.
+const MIN_BIT_SWING = 0.012, BIT_FRACTION = 0.25;
+
 export const bitsFor = (n) => Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
 export const grayEncode = (x) => x ^ (x >> 1);
 
@@ -75,6 +79,19 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
   const white = new Float32Array(n), black = new Float32Array(n);
   const codeX = new Int32Array(n), codeY = new Int32Array(n);
   const okX = new Uint8Array(n).fill(1), okY = new Uint8Array(n).fill(1);
+  // Contrast measured from the pattern PAIRS, not from white/black.
+  //
+  // A full-white frame and a full-black frame are exactly the two the camera's
+  // auto-exposure fights hardest: it stops down on one and opens up on the
+  // other, so both come back at similar brightness and their difference — the
+  // thing being used to decide whether a pixel can see the screen at all —
+  // collapses. Measured on a real rig it left about 1% of the screen usable.
+  //
+  // A pattern and its inverse have identical average brightness, so AE cannot
+  // tell them apart and cannot flatten the difference between them. The largest
+  // swing a pixel shows across all such pairs is therefore an AE-proof measure
+  // of how well that pixel sees the display.
+  const swing = new Float32Array(n);
   const pending = new Float32Array(n);
   let havePending = false, pendingSpec = null;
 
@@ -88,23 +105,28 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     const ok = spec.kind === 'x' ? okX : okY;
     for (let i = 0; i < n; i++) {
       const a = pending[i], b = camLuma[i];
-      // A pixel too close to call on this bit is marked unusable rather than
-      // guessed: one wrong bit is one wrong address.
-      if (Math.abs(a - b) < 1e-6) { ok[i] = 0; continue; }
-      if (a > b) code[i] |= 1 << spec.bit;
+      const d = a - b, ad = d < 0 ? -d : d;
+      if (ad > swing[i]) swing[i] = ad;
+      // A bit too close to call is marked unusable rather than guessed — one
+      // wrong bit is one wrong address. The threshold is relative to what this
+      // pixel has already shown it can swing, so a dim corner of a curved
+      // screen is judged by its own standard rather than the bright centre's.
+      if (ad < Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION)) { ok[i] = 0; continue; }
+      if (d > 0) code[i] |= 1 << spec.bit;
     }
   }
 
-  function finish({ minContrast = 0.06, fillIters = 24 } = {}) {
+  function finish({ minContrast = 0.04, fillIters = 24 } = {}) {
     const N = w * h;
     const sumU = new Float32Array(N), sumV = new Float32Array(N), cnt = new Float32Array(N);
     let decoded = 0;
     for (let cy = 0; cy < camH; cy++) {
       for (let cx = 0; cx < camW; cx++) {
         const i = cy * camW + cx;
-        // Below this the surface is not lit enough to trust — off the screen,
-        // deep in a shadow, or an edge so oblique the camera gets nothing.
-        if (white[i] - black[i] < minContrast) continue;
+        // Below this the pixel never responded to the patterns: off the screen,
+        // deep in shadow, or an edge so oblique the camera gets nothing. Judged
+        // on the pattern pairs, which auto-exposure cannot flatten.
+        if (swing[i] < minContrast) continue;
         if (!okX[i] || !okY[i]) continue;
         const dx = grayDecode(codeX[i], seq.bitsX);
         const dy = grayDecode(codeY[i], seq.bitsY);
@@ -151,7 +173,14 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
       for (let d = 0; d < N; d++) if (!filled[d] && (mapU[d] || mapV[d])) filled[d] = 1;
     }
 
-    return { w, h, mapU, mapV, valid, filled, coverage: seen / N, decoded };
+    // Report the contrast distribution: if coverage is poor this says whether
+    // the camera saw nothing at all, or saw plenty and failed to decode it.
+    const sorted = Float32Array.from(swing).sort();
+    const q = (f) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
+    return {
+      w, h, mapU, mapV, valid, filled, coverage: seen / N, decoded,
+      contrast: { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: sorted[sorted.length - 1], threshold: minContrast },
+    };
   }
 
   return { sequence: seq, add, finish };
