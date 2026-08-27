@@ -279,6 +279,18 @@ Building on Windows in CI is not a preference: NSIS installers produced under
 wine are unreliable, and CI keeps releases reproducible rather than dependent
 on one laptop.
 
+### Where the installer lives
+
+Under **Releases**, not in the file tree — GitHub keeps build artefacts separate
+from source. Latest installer:
+
+https://github.com/JJ0236/silhouette-particles/releases/latest
+
+Note `releaseType: "release"` in the build config. electron-builder defaults to
+publishing a *draft*, which is invisible on the repo page and, more importantly,
+is skipped by electron-updater — so every build would publish an installer that
+nothing could download and no machine would ever update to.
+
 ### First install
 
 The build is unsigned, so Windows SmartScreen will show

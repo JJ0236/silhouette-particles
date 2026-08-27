@@ -55,7 +55,8 @@
       {
         "provider": "github",
         "owner": "JJ0236",
-        "repo": "silhouette-particles"
+        "repo": "silhouette-particles",
+        "releaseType": "release"
       }
     ]
   }
