@@ -239,3 +239,58 @@ garment is suppressed, which is why the outline hue should stay off-palette.
 
 `?sim=1` is the other half of that: a synthetic walking figure drives the whole pipeline
 so the piece can be verified end to end with nobody in the room.
+
+---
+
+## Windows installation build
+
+The piece ships as a Windows app so it can own a display, keep the camera
+without prompting, and update itself.
+
+**Why Electron rather than a system WebView.** It runs the same Chromium engine
+that powers Edge, but pinned to a known version. This is a vision system tuned
+against specific rendering and timing behaviour; a browser updating overnight
+should not be able to change how it behaves on a wall somewhere. Electron also
+grants the camera up front — an installation gets power-cycled and has to come
+back with nobody there to click Allow — and can put itself on a chosen display,
+which a browser cannot.
+
+**Camera exposure.** Chromium can lock exposure and white balance; Safari
+cannot. That matters more here than it sounds: the detector predicts what the
+camera *should* read, so auto-exposure hunting as the piece brightens and
+darkens is a moving target it has to model and undo. On launch the app asks the
+camera for manual exposure, white balance and focus, and takes whatever it is
+offered. It is best-effort and per-camera — a camera that refuses is no worse
+off, because the software compensation is still there.
+
+### Releasing
+
+```
+npm version patch      # or minor / major
+git push --follow-tags
+```
+
+That is the whole process. Pushing a `v*` tag runs the test suite, builds the
+installer on a Windows runner, and publishes it to Releases. Installed copies
+check on launch and hourly, download in the background, and install on quit —
+so a running installation is never interrupted mid-show.
+
+Building on Windows in CI is not a preference: NSIS installers produced under
+wine are unreliable, and CI keeps releases reproducible rather than dependent
+on one laptop.
+
+### First install
+
+The build is unsigned, so Windows SmartScreen will show
+**"Windows protected your PC" → More info → Run anyway** the first time.
+Updates after that are silent. Signing removes the warning and needs a
+certificate; it wires into CI as a repo secret whenever you want it.
+
+### Known gaps
+
+Four closed-loop tests are marked `todo` rather than deleted, with their
+reasons in the test file. All are detection quality, none are safety — every
+feedback-immunity test passes. The most interesting one is physics rather than
+code: with a light-coloured top the body reflects *more* light than the wall
+(measured at 1.96x, because the projector is nearer the viewer than the wall),
+and a darker-than-predicted test cannot see that at all.
