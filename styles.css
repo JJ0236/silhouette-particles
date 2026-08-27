@@ -1,0 +1,195 @@
+:root { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: #000; color: #d8e6ee;
+  font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Installation mode: nothing on screen but the piece. */
+body.running { cursor: none; }
+body.running #panel:not([hidden]) { cursor: auto; }
+
+#view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; background: #000; }
+
+#overlay {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; text-align: center; padding: 24px;
+  background: #000;
+}
+#overlay[hidden] { display: none; }
+#overlay h1 {
+  margin: 0; font-size: clamp(28px, 5vw, 56px); font-weight: 300; letter-spacing: .06em;
+  color: #7fe3ff; text-shadow: 0 0 28px rgba(80,200,255,.55);
+}
+#overlay p { margin: 0; max-width: 46ch; opacity: .72; font-size: 15px; }
+#overlay .keys { font-size: 12px; opacity: .38; letter-spacing: .08em; }
+
+#start {
+  margin-top: 6px; padding: 12px 30px; border-radius: 999px; cursor: pointer;
+  background: transparent; color: #7fe3ff; font-size: 15px; letter-spacing: .06em;
+  border: 1px solid rgba(127,227,255,.45);
+  transition: background .18s ease, box-shadow .18s ease;
+}
+#start:hover { background: rgba(127,227,255,.10); box-shadow: 0 0 24px rgba(80,200,255,.25); }
+
+#panel {
+  position: fixed; top: 12px; right: 12px; z-index: 20;
+  width: 288px; max-height: calc(100vh - 24px); overflow-y: auto;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(8,12,16,.90); border: 1px solid rgba(120,180,210,.20);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  font-size: 11px;
+}
+#panel[hidden] { display: none; }
+
+#panel .status {
+  font-variant-numeric: tabular-nums; letter-spacing: .04em;
+  color: #7fe3ff; padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid rgba(120,180,210,.16);
+}
+#panel .status.bad { color: #ffb454; }
+
+#panel .head {
+  margin: 12px 0 4px; opacity: .40; letter-spacing: .10em; text-transform: lowercase;
+}
+
+#panel .row { display: grid; grid-template-columns: 92px 1fr 40px; align-items: center; gap: 8px; margin: 3px 0; }
+#panel label { opacity: .66; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel .val { text-align: right; opacity: .55; font-variant-numeric: tabular-nums; }
+
+#panel select {
+  width: 100%; background: rgba(255,255,255,.05); color: inherit; font-size: 11px;
+  border: 1px solid rgba(120,180,210,.20); border-radius: 6px; padding: 3px 5px;
+}
+
+#panel input[type=range] { width: 100%; accent-color: #4fc9ff; height: 16px; }
+
+#panel .toggles { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+#panel .toggles button {
+  flex: 1 1 auto; padding: 5px 9px; border-radius: 999px; cursor: pointer; font-size: 11px;
+  background: transparent; color: #9fb6c4; border: 1px solid rgba(120,180,210,.22);
+}
+#panel .toggles button.on { background: rgba(79,201,255,.16); color: #9fe8ff; border-color: rgba(79,201,255,.5); }
+
+#panel .help { margin-top: 10px; opacity: .30; font-size: 10px; letter-spacing: .06em; }
+
+/* ---- calibration mode ---- */
+
+body.calibrating { cursor: auto; }
+
+#calib { position: fixed; inset: 0; z-index: 30; background: #05080b; }
+#calib[hidden] { display: none; }
+#calib canvas { position: absolute; inset: 0; width: 100vw; height: 100vh; touch-action: none; cursor: crosshair; }
+
+.calib-ui {
+  position: absolute; top: 20px; left: 20px; width: 330px; max-width: calc(100vw - 40px);
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(8,12,16,.90); border: 1px solid rgba(120,180,210,.22);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+.calib-ui h2 {
+  margin: 0 0 8px; font-size: 15px; font-weight: 500; letter-spacing: .04em; color: #9fe8ff;
+}
+.calib-ui p { margin: 0 0 10px; font-size: 12px; line-height: 1.55; opacity: .70; }
+.calib-ui .hint { margin: 10px 0 0; font-size: 11px; opacity: .42; }
+
+.calib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.calib-actions button {
+  flex: 1 1 auto; padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 12px;
+  background: transparent; color: #9fb6c4; border: 1px solid rgba(120,180,210,.25);
+}
+.calib-actions button:hover { background: rgba(79,201,255,.10); color: #9fe8ff; }
+.calib-actions button[data-act="save"] {
+  color: #9fe8ff; border-color: rgba(79,201,255,.55); background: rgba(79,201,255,.12);
+}
+
+/* A degraded state must be visible, not silent. Background-subtraction
+   fallback on a rig where the camera sees the display looks exactly like the
+   piece is broken, so say so rather than leaving it to be diagnosed. */
+#warn {
+  position: fixed; left: 16px; bottom: 16px; z-index: 25;
+  padding: 8px 14px; border-radius: 8px; max-width: 46ch;
+  background: rgba(40,22,0,.88); border: 1px solid rgba(255,180,84,.45);
+  color: #ffb454; font-size: 12px; letter-spacing: .03em; line-height: 1.5;
+  pointer-events: none;
+}
+#warn[hidden] { display: none; }
+
+/* ---- calibration wizard (steps 2–4) ---- */
+
+/* Steps 2–4 hand the display to photocal: the overlay must get out of the way
+   of the #view canvas underneath, both visually and for pointer events. */
+#calib.run { background: transparent; pointer-events: none; }
+#calib.run .calib-ui { pointer-events: auto; }
+#calib canvas[hidden] { display: none; }
+
+/* While a pass runs the panel is light the camera sees but the detector never
+   captured, so it goes away entirely; the cursor is light too. */
+#calib.dark { cursor: none; }
+#calib.dark .calib-ui { visibility: hidden; }
+#calib.dim .calib-ui { opacity: .35; }
+
+.calib-ui .calib-steps {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 8px;
+  font-size: 10px; letter-spacing: .08em; text-transform: lowercase; opacity: .45;
+}
+.calib-ui .calib-steps span.on { color: #9fe8ff; opacity: 1; }
+.calib-ui .calib-steps span.done { color: #7fe3ff; }
+.calib-ui .calib-steps span { opacity: .6; }
+
+.calib-ui .calib-big { font-size: 15px; color: #d8e6ee; opacity: .92; margin-bottom: 6px; }
+.calib-ui .calib-count {
+  min-height: 18px; margin: 4px 0 8px; color: #ffb454; font-size: 12px;
+  letter-spacing: .04em; font-variant-numeric: tabular-nums;
+}
+.calib-ui .calib-warn {
+  margin: 8px 0 0; padding: 6px 9px; border-radius: 6px; font-size: 11px; line-height: 1.45;
+  color: #ffb454; background: rgba(40,22,0,.55); border: 1px solid rgba(255,180,84,.35); opacity: 1;
+}
+
+.calib-progress {
+  height: 4px; border-radius: 999px; overflow: hidden; margin: 6px 0 4px;
+  background: rgba(120,180,210,.14);
+}
+.calib-progress .bar {
+  height: 100%; width: 0; background: #4fc9ff; border-radius: 999px;
+  transition: width .12s linear;
+}
+.calib-ui .calib-phase { font-size: 10px; letter-spacing: .08em; opacity: .45; min-height: 14px; }
+
+.calib-card { margin-top: 10px; }
+.calib-card dl {
+  margin: 0; display: grid; grid-template-columns: 82px 1fr; gap: 3px 10px;
+  font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.5;
+}
+.calib-card dt { opacity: .45; letter-spacing: .06em; text-transform: lowercase; }
+.calib-card dd { margin: 0; color: #d8e6ee; opacity: .88; }
+.calib-card .muted { opacity: .45; }
+.calib-card dd button {
+  margin-left: 6px; padding: 1px 8px; border-radius: 999px; cursor: pointer; font-size: 10px;
+  background: rgba(79,201,255,.12); color: #9fe8ff; border: 1px solid rgba(79,201,255,.45);
+}
+.calib-card ul.calib-hints { margin: 6px 0 0; padding-left: 16px; font-size: 11px; line-height: 1.5; opacity: .8; }
+.calib-card ul.calib-hints li { margin: 3px 0; }
+.calib-card ul.calib-hints i { color: #9fe8ff; font-style: normal; }
+.calib-card .calib-peak { font-size: 11px; opacity: .7; font-variant-numeric: tabular-nums; margin-bottom: 6px; }
+
+/* The verdict is read from across the room. */
+.calib-verdict {
+  font-size: 40px; font-weight: 300; letter-spacing: .18em; line-height: 1.1;
+  margin: 6px 0 4px;
+}
+.calib-verdict.pass { color: #7fe3ff; text-shadow: 0 0 22px rgba(80,200,255,.45); }
+.calib-verdict.fail { color: #ff7a5c; text-shadow: 0 0 22px rgba(255,90,60,.4); }
+
+.calib-actions { margin-top: 12px; }
+.calib-actions button.primary {
+  color: #9fe8ff; border-color: rgba(79,201,255,.55); background: rgba(79,201,255,.12);
+}
+.calib-actions button[disabled] { opacity: .35; cursor: default; }
+.calib-actions button[disabled]:hover { background: transparent; color: #9fb6c4; }

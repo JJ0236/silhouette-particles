@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Silhouette Particles</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <div id="overlay">
+    <h1>Silhouette Particles</h1>
+    <p id="overlay-msg">Stand in front of the display. Move to push the field.</p>
+    <button id="start">Begin</button>
+    <p class="keys">D panel · C calibrate · P photometric · I diagnostics · M mask · V flow · F fullscreen · S sim</p>
+  </div>
+
+  <div id="warn" hidden></div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

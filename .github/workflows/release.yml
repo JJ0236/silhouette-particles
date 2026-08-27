@@ -1,0 +1,41 @@
+name: release
+
+# Push a tag like v1.0.1 and this builds the Windows installer on a real Windows
+# runner and publishes it to Releases. The installed app polls Releases, so a
+# tag push is all it takes for machines in the field to update themselves.
+#
+# Building on Windows rather than cross-compiling is not a preference: NSIS
+# installers produced under wine are unreliable, and this also keeps releases
+# reproducible rather than dependent on one laptop.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      # The suite is pure and dependency-free, so it gates the release without
+      # needing an install step.
+      - run: node --test test/*.test.mjs
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci
+      - name: Build and publish installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always

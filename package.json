@@ -1,0 +1,62 @@
+{
+  "name": "silhouette-particles",
+  "productName": "Silhouette Particles",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Camera-behind-viewer projection installation: your silhouette and a particle field you push, using occlusion segmentation against the known projected frame.",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "license": "MIT",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test test/*.test.mjs",
+    "app": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "build": {
+    "appId": "io.joshhicks.silhouetteparticles",
+    "productName": "Silhouette Particles",
+    "files": [
+      "index.html",
+      "styles.css",
+      "src/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Silhouette Particles"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JJ0236",
+        "repo": "silhouette-particles"
+      }
+    ]
+  }
+}
