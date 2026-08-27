@@ -6,5 +6,5 @@ contextBridge.exposeInMainWorld('installation', {
   version: () => ipcRenderer.invoke('app-version'),
   displays: () => ipcRenderer.invoke('displays'),
   quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
-  onUpdateReady: (fn) => ipcRenderer.on('update-ready', (_e, v) => fn(v)),
+  onUpdateState: (fn) => ipcRenderer.on('update-state', (_e, s) => fn(s)),
 });

@@ -345,6 +345,21 @@ publishing a *draft*, which is invisible on the repo page and, more importantly,
 is skipped by electron-updater — so every build would publish an installer that
 nothing could download and no machine would ever update to.
 
+### How updating actually behaves
+
+Launch, quit, launch. On launch it checks GitHub and downloads a newer version
+in the background; the install happens **on quit**, so a running installation is
+never interrupted mid-show; the next launch is on the new version. One restart
+downloads, the second applies.
+
+A banner appears when an update has been downloaded and is waiting, and another
+if the check failed. That distinction matters: an installation silently failing
+to update looks exactly like one that is already current, and the two need very
+different responses. Version and update state are also logged to the console.
+
+Only the installed app updates — not a copy run from source — and it needs
+internet at launch.
+
 ### First install
 
 The build is unsigned, so Windows SmartScreen will show

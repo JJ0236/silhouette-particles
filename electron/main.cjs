@@ -114,10 +114,19 @@ app.whenReady().then(async () => {
   check();
   setInterval(check, 60 * 60 * 1000);
 
-  autoUpdater.on('update-downloaded', (info) => {
-    console.info('[update] ready:', info.version);
-    if (win) win.webContents.send('update-ready', info.version);
+  // Report every stage, not just success. An installation that silently fails
+  // to update looks identical to one that is already current, and the two need
+  // very different responses.
+  const say = (state, detail) => { if (win) win.webContents.send('update-state', { state, detail }); };
+  autoUpdater.on('checking-for-update', () => say('checking'));
+  autoUpdater.on('update-not-available', () => say('current', app.getVersion()));
+  autoUpdater.on('update-available', (i) => say('downloading', i.version));
+  autoUpdater.on('download-progress', (p) => say('downloading', `${Math.round(p.percent)}%`));
+  autoUpdater.on('update-downloaded', (i) => {
+    console.info('[update] ready:', i.version);
+    say('ready', i.version);
   });
+  autoUpdater.on('error', (e) => { console.warn('[update]', e); say('failed', e?.message ?? String(e)); });
 });
 
 ipcMain.handle('app-version', () => app.getVersion());

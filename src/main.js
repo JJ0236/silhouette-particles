@@ -288,6 +288,27 @@ addEventListener('keydown', e => {
   else if (k === 'r') { reset(); location.reload(); }
 });
 
+// Update status, shown only when it is worth knowing.
+//
+// Without this an installation that is silently failing to update is
+// indistinguishable from one that is already current — and those need very
+// different responses from whoever is standing there.
+if (typeof window !== 'undefined' && window.installation) {
+  window.installation.version?.().then((v) => console.info('[app] version', v));
+  window.installation.onUpdateState?.(({ state, detail }) => {
+    console.info('[update]', state, detail ?? '');
+    if (state === 'ready') {
+      warnEl.textContent = `Update ${detail} downloaded — quit and relaunch to apply.`;
+      warnEl.hidden = false;
+      lastWarn = warnEl.textContent;
+    } else if (state === 'failed') {
+      warnEl.textContent = `Update check failed: ${detail}`;
+      warnEl.hidden = false;
+      lastWarn = warnEl.textContent;
+    }
+  });
+}
+
 startBtn.addEventListener('click', () => begin(false));
 
 if (settings.sim) {
