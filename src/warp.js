@@ -35,6 +35,11 @@ export function quadBoxOf(H, pad = 0.02) {
 }
 
 export function createWarp({ w = 480, h = 270 } = {}) {
+  // A measured display->camera map, when we have one. It supersedes the
+  // homography because it is not a model at all: it is the correspondence the
+  // camera actually reported, so a curved screen, a blend seam between two
+  // projectors and the lens's own distortion are all already in it.
+  let map = null;
   const src = document.createElement('canvas');
   const sctx = src.getContext('2d', { willReadFrequently: true });
   let srcData = null, srcW = 0, srcH = 0;
@@ -86,7 +91,57 @@ export function createWarp({ w = 480, h = 270 } = {}) {
   // finger-scale edges the detector depends on; the supersample is cheaper
   // than a wider readback and keeps the sampling footprint about one cell.
   // Returns false (out untouched) when the camera has no frame yet.
+  function setMap(m) {
+    map = m && m.w === w && m.h === h ? m : null;
+    return !!map;
+  }
+
+  // Bounding box straight from the measured correspondence, so the readback
+  // still covers only the part of the sensor the screen occupies.
+  function mapBox(pad = 0.02) {
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0, any = false;
+    for (let i = 0; i < w * h; i++) {
+      if (!map.filled[i]) continue;
+      const u = map.mapU[i], v = map.mapV[i];
+      if (u < x0) x0 = u; if (u > x1) x1 = u;
+      if (v < y0) y0 = v; if (v > y1) y1 = v;
+      any = true;
+    }
+    if (!any) return { x: 0, y: 0, w: 1, h: 1 };
+    x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad);
+    x1 = Math.min(1, x1 + pad); y1 = Math.min(1, y1 + pad);
+    return { x: x0, y: y0, w: Math.max(0.01, x1 - x0), h: Math.max(0.01, y1 - y0) };
+  }
+
+  function sampleGridMapped(camera, mirror, out) {
+    const vw = camera.video.videoWidth, vh = camera.video.videoHeight;
+    if (!vw || !vh) return false;
+    box = mapBox();
+    const sw = Math.max(32, Math.min(1024, Math.round(box.w * vw)));
+    const sh = Math.max(32, Math.min(1024, Math.round(box.h * vh)));
+    if (src.width !== sw || src.height !== sh) { src.width = sw; src.height = sh; }
+    srcW = sw; srcH = sh;
+    if (!camera.drawRegion(sctx, sw, sh, box.x, box.y, box.w, box.h)) return false;
+    srcData = sctx.getImageData(0, 0, srcW, srcH).data;
+
+    let o = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // Mirroring is a display-space flip, so it indexes the map rather than
+        // transforming its output.
+        const d = y * w + (mirror ? w - 1 - x : x);
+        sampleRGB(map.mapU[d], map.mapV[d], rgb);
+        out[o] = rgb[0] + 0.5 | 0;
+        out[o + 1] = rgb[1] + 0.5 | 0;
+        out[o + 2] = rgb[2] + 0.5 | 0;
+        o += 3;
+      }
+    }
+    return true;
+  }
+
   function sampleGrid(camera, H, mirror, out) {
+    if (map) return sampleGridMapped(camera, mirror, out);
     if (!H || !ensureSource(camera, H)) return false;
     srcData = sctx.getImageData(0, 0, srcW, srcH).data;
 
@@ -128,5 +183,5 @@ export function createWarp({ w = 480, h = 270 } = {}) {
   }
 
 
-  return { sampleGrid, get box() { return box; } };
+  return { sampleGrid, setMap, get hasMap() { return !!map; }, get box() { return box; } };
 }

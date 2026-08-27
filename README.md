@@ -16,6 +16,36 @@ It has to be served over `http://localhost` — the camera needs a secure contex
 `file://` isn't one. Nothing leaves the machine; the segmentation model and its runtime
 are vendored in `vendor/`, so it runs with the network unplugged.
 
+## Curved and multi-projector screens
+
+The geometry step measures the display→camera mapping with **gray-code
+structured light** rather than fitting four corners. That matters as soon as the
+screen is not flat: a homography maps planes to planes, so on a 120° curved
+screen the error peaks in the middle — where people stand — at roughly **9 cells
+on a 416-wide grid**, against a detector that tolerates one or two. Corner
+dragging cannot fix that, because the model itself is wrong.
+
+Measuring does not care what the surface is. It gives, per display cell, where
+the camera actually sees it — so curvature, lens distortion, and the seam
+between edge-blended projectors are all already in the answer. The photometric
+map is per-cell too, so each projector's different black level and the blend
+overlap are absorbed the same way.
+
+Gray code specifically: consecutive values differ in exactly one bit, so a
+camera pixel straddling a stripe edge misreads at most one bit and lands on a
+neighbouring cell. Plain binary would have a carry flip every bit at once and
+land somewhere arbitrary. Each pattern is shown with its inverse and thresholded
+against it, which makes the read independent of how brightly that part of the
+surface happens to be lit — necessary on a curve, where the edges are far dimmer
+than the centre.
+
+Cells no camera pixel landed on are filled from their neighbours; cells the
+camera genuinely cannot see are marked unobservable rather than invented, and
+the wizard reports what fraction was measured directly.
+
+Corner marking is still there as a fallback, for a rig where the pattern
+sequence cannot get a clean read.
+
 ## Calibrating the rig
 
 The camera sees the whole room; the display is a small trapezoid somewhere inside

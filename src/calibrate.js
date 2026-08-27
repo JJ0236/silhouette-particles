@@ -89,6 +89,8 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       case 'back':   showStep(step - 1); break;
       case 'skip':   showStep(step + 1); break;
       case 'start':  fireStart(); break;
+      case 'measure': runGeometry(); break;
+      case 'corners': manualCorners = true; renderCorners(); break;
       case 'retry':  showStep(step); break;
       case 'reset':  calib.reset(); break;
       case 'save':   calib.save(); close(); break;
@@ -131,7 +133,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     root.classList.remove('dark', 'dim');
     canvas.hidden = step !== 1;
     showSteps();
-    if (step === 1) renderCorners();
+    if (step === 1) { manualCorners ? renderCorners() : renderGeometry(); }
     else if (step === 2) runPhotometricStep(gen);
     else if (step === 3) runLoopStep(gen);
     else runStandInStep(gen);
@@ -147,6 +149,74 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   // Arming the pass instead of starting it also means Back/Cancel are usable
   // while you get into position, and a pass can be re-run without leaving and
   // re-entering the step.
+  // Structured light is the default geometry path; the corner UI stays as a
+  // fallback for a projector or camera that the pattern sequence cannot get a
+  // clean read from.
+  let manualCorners = false;
+  let geoResult = null;
+
+  function renderGeometry() {
+    canvas.hidden = true;
+    root.classList.add('run');
+    bodyEl.innerHTML = `
+      <p class="calib-big">Measure the screen.</p>
+      <p>The display flashes about forty patterns, roughly three seconds, and
+         reads back which part of the screen the camera sees where. This
+         replaces dragging corners and works on a curved or multi-projector
+         screen, where four corners cannot: a corner fit assumes the surface is
+         flat, and on a 120° screen that is around nine cells out in the middle
+         — exactly where people stand.</p>
+      <p>Nothing between the camera and the screen while it runs.</p>
+      <div class="calib-count"></div>
+      <div class="calib-progress"><div class="bar"></div></div>
+      <div class="calib-card"></div>`;
+    setActions([
+      { act: 'measure', label: 'Measure screen', primary: true },
+      { act: 'corners', label: 'Use corners instead' },
+      ...(photocal.hasGeometry ? [{ act: 'next', label: 'Next: photometric' }] : []),
+      { act: 'cancel', label: 'Cancel' },
+    ]);
+  }
+
+  async function runGeometry() {
+    const g = gen;
+    enable('measure', false); enable('corners', false);
+    root.classList.add('dark');
+    let map = null;
+    try {
+      map = await photocal.runStructured();
+    } catch (e) {
+      map = null;
+      console.warn('[calibrate] structured light failed:', e);
+    }
+    root.classList.remove('dark');
+    if (stale(g)) return;
+    geoResult = map;
+    const card = bodyEl.querySelector('.calib-card');
+    if (map && map.coverage > 0.05) {
+      const pct = (map.coverage * 100).toFixed(0);
+      card.innerHTML = `<div class="calib-ok">Screen measured</div>
+        <div>${pct}% of the display was seen directly; the rest was filled in from
+             its neighbours, which is sound because a physical surface is smooth.</div>`;
+      setActions([
+        { act: 'next', label: 'Next: photometric', primary: true },
+        { act: 'measure', label: 'Measure again' },
+        { act: 'corners', label: 'Use corners instead' },
+        { act: 'cancel', label: 'Cancel' },
+      ]);
+    } else {
+      card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>
+        <div>Usually the room is too bright, the camera is not pointed at the
+             screen, or the display latency has not been measured yet. You can
+             fall back to marking four corners, which works on a flat screen.</div>`;
+      setActions([
+        { act: 'measure', label: 'Try again', primary: true },
+        { act: 'corners', label: 'Use corners instead' },
+        { act: 'cancel', label: 'Cancel' },
+      ]);
+    }
+  }
+
   let armResolve = null;
   function armed(g) {
     return new Promise((resolve) => {

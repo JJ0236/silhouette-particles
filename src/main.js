@@ -96,6 +96,9 @@ async function startCamera(deviceId) {
     panel.setDevices(devices, currentDevice || devices[0]?.deviceId);
     if (!currentDevice && devices[0]) currentDevice = devices[0].deviceId;
     photo = await loadPhoto(photoMeta());
+    // Geometry is stored under its own key: the light gets re-measured far more
+    // often than the camera gets moved.
+    await photocal.loadMap(photoMeta()).catch(() => null);
     offFrame = camera.onFrame(onCameraFrame);
     return true;
   } catch (e) {

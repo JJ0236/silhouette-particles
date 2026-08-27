@@ -1,4 +1,5 @@
 import { MASK_W, MASK_H } from './config.js';
+import { createDecoder, patternFor, smoothMap } from './structured.js';
 import { patchLayout, calibrationSequence, createAccumulator } from './photometric.js';
 import { mSequence, latencySchedule, crossCorrelate } from './latency.js';
 import { contourBand } from './field.js';
@@ -174,7 +175,9 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
 
   const api = {
     paintFrame, paintFloor,
-    runLatency, runPhotometric, runRegistration, runLoopCheck, runStandIn,
+    runLatency, runPhotometric, runRegistration, runLoopCheck, runStandIn, runStructured,
+    loadMap, storeMap,
+    get hasGeometry() { return warp.hasMap; },
     cancel, loadStored, expectedMeta,
     onProgress: onProgress ?? null,
     get photo() { return photo; },
@@ -239,6 +242,85 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       ctx.fillRect(x, y, w, h);
     }
     return endPaint();
+  }
+
+  // Paint a display-space pattern by blitting the small buffer up to the wall.
+  // Nearest-neighbour on purpose: a smoothed stripe edge would blur the very
+  // boundary the decoder is measuring.
+  const patBuf = new Uint8Array(MASK_W * MASK_H);
+  let patCanvas = null, patCtx = null, patImage = null;
+  function paintPattern(spec) {
+    if (!patCanvas) {
+      patCanvas = document.createElement('canvas');
+      patCanvas.width = MASK_W; patCanvas.height = MASK_H;
+      patCtx = patCanvas.getContext('2d');
+      patImage = patCtx.createImageData(MASK_W, MASK_H);
+    }
+    patternFor(spec, MASK_W, MASK_H, patBuf);
+    const d = patImage.data;
+    for (let i = 0, o = 0; i < patBuf.length; i++, o += 4) {
+      d[o] = d[o + 1] = d[o + 2] = patBuf[i]; d[o + 3] = 255;
+    }
+    patCtx.putImageData(patImage, 0, 0);
+    beginPaint();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(patCanvas, 0, 0, view.width, view.height);
+    return endPaint();
+  }
+
+  // Measure the display->camera correspondence with gray-code structured light.
+  //
+  // This supersedes the four-corner homography, which is exact only for a flat
+  // wall: a projective transform maps planes to planes, so on a curved screen
+  // the error peaks in the middle — where people stand — and no amount of
+  // corner-dragging fixes it. Measuring also absorbs lens distortion and the
+  // seam between blended projectors, neither of which a homography can express.
+  //
+  // It samples the FULL sensor frame rather than the calibrated region, because
+  // there is no calibrated region yet — establishing one is the point.
+  function runStructured({ camW = 320, camH = 180 } = {}) {
+    return run(async () => {
+      const dec = createDecoder({ w: MASK_W, h: MASK_H, camW, camH, holdFrames: 2 });
+      const seq = dec.sequence;
+      const luma = new Float32Array(camW * camH);
+      const painted = [];
+
+      const full = document.createElement('canvas');
+      full.width = camW; full.height = camH;
+      const fctx = full.getContext('2d', { willReadFrequently: true });
+
+      const ok = await drive({
+        steps: seq.length + PREROLL,
+        phase: 'geometry',
+        paint: (i, now) => {
+          const spec = i < PREROLL ? { kind: 'white' } : seq.frame(i - PREROLL);
+          const t = paintPattern(spec);
+          painted.push({ t, spec, counted: i >= PREROLL });
+        },
+        onCam: (_obs, tCam) => {
+          // Attribute the frame to whatever was on the wall when it was
+          // exposed, which is one display latency ago.
+          const rec = specAt(painted, tCam - (settings.lagMs || 0));
+          if (!rec || rec.settle) return;
+          if (!camera.drawFull(fctx, camW, camH)) return;
+          const d = fctx.getImageData(0, 0, camW, camH).data;
+          for (let i = 0, o = 0; i < luma.length; i++, o += 4) {
+            luma[i] = lumaOf(d[o], d[o + 1], d[o + 2]) / 255;
+          }
+          dec.add(rec, luma);
+        },
+        tailMs: (settings.lagMs || 0) + 150,
+      });
+      if (!ok) return null;
+
+      const map = smoothMap(dec.finish({ minContrast: 0.05 }), 1);
+      map.meta = { ...expectedMeta(), kind: 'structured' };
+      if (map.coverage > 0.05) {
+        warp.setMap(map);
+        await storeMap(map);
+      }
+      return map;
+    });
   }
 
   // What the idle piece emits: black plus the void floor. Painted after every
@@ -344,6 +426,39 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       if (painted[k].t <= t) return painted[k].spec;
     }
     return null;
+  }
+
+  // Geometry is stored beside the photometric map but under its own key: you
+  // re-measure the light far more often than you move the camera.
+  const MAP_KEY = 'geometry';
+  async function storeMap(map) {
+    try {
+      const db = await openDb();
+      await new Promise((res, rej) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put({
+          w: map.w, h: map.h, mapU: map.mapU, mapV: map.mapV,
+          valid: map.valid, filled: map.filled, coverage: map.coverage, meta: map.meta,
+        }, MAP_KEY);
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+      return true;
+    } catch { return false; }
+  }
+
+  async function loadMap(expect) {
+    try {
+      const db = await openDb();
+      const raw = await new Promise((res, rej) => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get(MAP_KEY);
+        req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error);
+      });
+      if (!raw || raw.w !== MASK_W || raw.h !== MASK_H) return null;
+      if (expect && raw.meta?.deviceId && expect.deviceId && raw.meta.deviceId !== expect.deviceId) return null;
+      warp.setMap(raw);
+      return raw;
+    } catch { return null; }
   }
 
   const PREROLL = 30;   // frames at the pass's APL before recording — AE settle
