@@ -90,6 +90,25 @@ the frame edge, or blocked by a speaker — as a span and a blocked fraction. Th
 cells are excluded from the detector entirely, so **nobody standing in front of
 them will register**, and it is better to know that than to wonder.
 
+### Performance
+
+Two things dominate, and both are tunable.
+
+**Render cost scales with the wall.** 5760x1080 is 6.2 megapixels and the
+compositor makes several full-frame passes per frame — rim, particles, bloom
+down, bloom up, composite, bright-field inversion. Rendering a wide wall at full
+native resolution costs roughly nine times what a 1920-wide render did. The
+content is a soft glow and small dots, neither of which carries pixel-level
+detail, so rendering below native and letting the display scale is nearly
+invisible. `render detail` in the panel trades it against smoothness live.
+
+**The detector has an idle fast path.** With nobody in front of the screen there
+are no seeds, and every stage after that — hysteresis, morphology, components,
+hole filling, growth, contour — is a full pass over ~100k cells producing an
+empty result. That is the state the piece spends most of its life in. Measured
+on a 720x134 grid: 10.5 ms idle, 13.8 ms with someone present, against a 33 ms
+budget at 30fps.
+
 ## Curved and multi-projector screens
 
 The geometry step measures the display→camera mapping with **gray-code

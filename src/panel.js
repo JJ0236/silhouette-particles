@@ -55,6 +55,7 @@ const SLIDERS = [
   ['motionSmooth',  0,    0.9,   0.01,  'motion lag'],
   ['— look —'],
   ['glow',          0,    2,     0.05,  'glow'],
+  ['renderScale',   0.25, 2.5,   0.05,  'render detail'],
 ];
 
 const TOGGLES = [

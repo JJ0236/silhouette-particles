@@ -50,6 +50,7 @@ const BAND_SPREAD = 0.08;
 // narrower than the interval between the frames it is selecting from.
 const CAPTURE_PERIOD_MS = 30;
 const RATIO_BINS = 512, PCT_MAX = 4;
+const COLD = 0.004;   // below this the mask is visually gone
 const HOLE_ACCEPT_RATIO = 1.05;
 const SMOOTH_TOL = 0.15;
 const LUMA_R = 0.299, LUMA_G = 0.587, LUMA_B = 0.114;
@@ -330,6 +331,23 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
     observableFrac = obsCount / N;
   }
 
+  // True when the smoothed mask has already decayed to nothing, so there is no
+  // fade left to render either.
+  function maskIsCold() {
+    for (let i = 0; i < N; i++) if (mask[i] > COLD) return false;
+    return true;
+  }
+
+  // Everything an empty frame needs: decay to zero, report nothing, and leave
+  // the previous-mask exclusion clean for the next frame.
+  function finishIdle() {
+    mask.fill(0); fast.fill(0); rim.fill(0); influence.fill(0); motion.fill(0);
+    bin.fill(0);
+    self.coverage = 0;
+    diag.veto = false; diag.vetoReason = '';
+    for (const m of medHist) m.fill(0);
+  }
+
   function finishOutputs() {
     const ms = cfg('maskSmooth'), fs = cfg('motionSmooth');
     const km = 1 - ms, kf = 1 - fs;
@@ -534,6 +552,22 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
 
     // --- Mask chain. Every stage here shrinks or keeps the candidate set,
     // except the enclosed-hole fill which cannot reach the outer boundary. ---
+    // Idle fast path.
+    //
+    // With nobody in front of the screen there are no seeds, and every stage
+    // below — hysteresis, morphology, connected components, hole filling,
+    // region growing, the contour — is a full pass over ~100k cells producing
+    // an empty result. That is the state the piece spends most of its life in,
+    // so it is worth not paying for it. The moment a single seed appears the
+    // full chain runs again.
+    let anySeed = false;
+    for (let i = 0; i < N; i++) if (seed[i]) { anySeed = true; break; }
+    if (!anySeed && maskIsCold()) {
+      rawA.fill(0);
+      finishIdle();
+      return;
+    }
+
     hysteresis(seed, cand, w, h, rawA, stack);
     let cur = rawA, other = rawB;
     const oR = cfg('openR');

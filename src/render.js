@@ -13,7 +13,17 @@ import { MASK_W, MASK_H, WORK_W, WORK_H, settings } from './config.js';
 // along. Counting pixels caps the actual cost (fill rate and the bloom chain)
 // while letting an unusual shape use the resolution it has. 5760x1080 is 6.2M
 // pixels, comfortably inside this; a 4K panel at 8.3M is scaled slightly.
-const MAX_PIXELS = 7.0e6;
+// Default render budget. 5760x1080 is 6.2 megapixels, and the compositor makes
+// several full-frame passes per frame — rim, particles, bloom down, bloom up,
+// the final composite, the bright-field inversion — so rendering a wall at full
+// native resolution costs roughly nine times what a 1920-wide render did, which
+// is exactly what made it lag.
+//
+// The content is a soft glow and small dots, neither of which carries detail at
+// the pixel level, so rendering below native and letting the display scale is
+// nearly invisible. Exposed as `renderScale` so it can be traded against
+// smoothness on the actual machine.
+const DEFAULT_MAX_PIXELS = 2.6e6;
 
 // The occlusion detector predicts what the camera should see from what we
 // emitted, so it needs a copy of every finished frame at its own grid. This is
@@ -58,7 +68,8 @@ export function createRenderer(view) {
   function resize() {
     const cssW = view.clientWidth || window.innerWidth;
     const cssH = view.clientHeight || window.innerHeight;
-    const scale = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, cssW * cssH)));
+    const budget = (settings.renderScale > 0 ? settings.renderScale : 1) * DEFAULT_MAX_PIXELS;
+    const scale = Math.min(1, Math.sqrt(budget / Math.max(1, cssW * cssH)));
     W = Math.max(2, Math.round(cssW * scale));
     H = Math.max(2, Math.round(cssH * scale));
     view.width = W; view.height = H;
@@ -133,6 +144,7 @@ export function createRenderer(view) {
     actx.drawImage(scene, 0, 0, bloomA.width, bloomA.height);
     bctx.clearRect(0, 0, bloomB.width, bloomB.height);
     bctx.drawImage(bloomA, 0, 0, bloomB.width, bloomB.height);
+    actx.clearRect(0, 0, bloomA.width, bloomA.height);
     actx.drawImage(bloomB, 0, 0, bloomA.width, bloomA.height);
 
     ctx.globalCompositeOperation = 'source-over';
