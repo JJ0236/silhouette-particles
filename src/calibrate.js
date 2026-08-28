@@ -159,15 +159,16 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
 
   async function runAutoAll() {
     const g = gen;
-    enable('auto', false); enable('measure', false); enable('corners', false);
-    root.classList.add('dark');
+    enable('auto', false); enable('measure', false); enable('corners', false); enable('white', false);
+    if (whiteOn) toggleWhite();
+    beginPass();
     let rep = null;
     try {
       rep = await photocal.runAuto();
     } catch (e) {
       console.warn('[calibrate] auto failed:', e);
     }
-    root.classList.remove('dark');
+    endPass();
     if (stale(g)) return;
     const card = bodyEl.querySelector('.calib-card');
     if (!rep) {
@@ -207,14 +208,38 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   function toggleWhite() {
     whiteOn = !whiteOn;
     if (whiteOn) {
+      // Same layering problem as the pattern passes: the preview canvas sits on
+      // top of the surface being painted, so it has to come down.
+      canvas.hidden = true;
       photocal.holdField(255);
       whiteTimer = setInterval(() => photocal.holdField(255), 200);
     } else {
       clearInterval(whiteTimer); whiteTimer = 0;
+      if (active && step === 1 && !manualCorners) canvas.hidden = false;
     }
     renderGeometryActions();
   }
   let whiteTimer = 0;
+
+  // While a measurement pass runs, the wizard must get out of the way entirely.
+  //
+  // photocal paints its patterns onto the main view canvas; this wizard draws
+  // its preview onto its own canvas at z-index 30, with an opaque background,
+  // directly on top. So the patterns were being displayed correctly and covered
+  // up — and worse, the camera was photographing the live preview instead of the
+  // patterns, which is why nothing decoded. The overlay is hidden and the
+  // preview loop stops for the duration.
+  let passRunning = false;
+  function beginPass() {
+    passRunning = true;
+    canvas.hidden = true;
+    root.classList.add('dark');
+  }
+  function endPass() {
+    passRunning = false;
+    root.classList.remove('dark');
+    if (active && step === 1 && !manualCorners) canvas.hidden = false;
+  }
 
   function renderGeometry() {
     canvas.hidden = false;   // the live camera view stays up while aiming
@@ -239,8 +264,9 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
 
   async function runGeometry() {
     const g = gen;
-    enable('measure', false); enable('corners', false);
-    root.classList.add('dark');
+    enable('measure', false); enable('corners', false); enable('white', false);
+    if (whiteOn) toggleWhite();
+    beginPass();
     let map = null;
     try {
       map = await photocal.runStructured();
@@ -248,7 +274,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       map = null;
       console.warn('[calibrate] structured light failed:', e);
     }
-    root.classList.remove('dark');
+    endPass();
     if (stale(g)) return;
     geoResult = map;
     const card = bodyEl.querySelector('.calib-card');
@@ -632,9 +658,9 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   // grid, whose aspect is fixed by the capture size.
   function draw(displayAspect) {
     if (!active || step !== 1) return;
-    // The white field owns the screen while it is up; redrawing over it would
-    // defeat the point of showing it.
-    if (whiteOn) return;
+    // The white field and the pattern passes both own the screen while they are
+    // up; redrawing over either would defeat the point.
+    if (whiteOn || passRunning) return;
     const w = window.innerWidth, h = window.innerHeight;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
 
