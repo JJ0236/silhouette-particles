@@ -40,6 +40,44 @@ small, the detector grid is being upscaled from very few camera pixels and no
 software will recover detail that was never captured — move the camera closer or
 zoom in.
 
+### Why a structured-light pass fails, and how it says so
+
+Four defects made this return a confident zero, found by auditing the whole
+capture-to-decode path at once rather than one at a time. They are worth
+recording because each *individually* forces coverage to 0, so fixing one
+changes nothing visible.
+
+**The settle window measured the wrong interval.** It asked how long since the
+last repaint, but the driver repaints every frame — about every 16ms — against a
+60ms threshold. Every camera frame was discarded and the decoder was never fed
+anything. Structurally zero, whatever the room or optics did. It now measures
+from the last pattern CHANGE.
+
+**The attribution window was one-sided.** Attribution and age were both evaluated
+at the same latency-shifted instant, which catches a lag over-estimate (corrupted
+frames land at the start of the next hold, inside the window) but admits every
+frame of an under-estimate, which lands near the end of the previous hold. The
+correlation has no sign constraint, so half of all runs got no protection. It now
+requires the same pattern to have been on the wall across the whole uncertainty
+window, sized from the correlation peak's measured width.
+
+**One stray frame could poison a bit for every pixel.** The decoder kept a single
+global `pending` and paired whatever arrived next, so a misattributed frame at a
+hold boundary differenced two different bits — noise for every pixel at once,
+which then raises every floor and rejects the entire frame. Pairing now requires
+the immediately preceding hold, and each hold's frames are averaged rather than
+one being taken.
+
+**A bit whose pair never completed decoded as zero, silently.** Forcing a gray bit
+to zero folds the position into half the axis: a confident, badly wrong map that
+nothing in the diagnostics could see. Unpaired bits are now tracked and reported
+by name.
+
+Also: `runStructured` had no latency precondition, so the "Screen geometry only"
+button could not work on a fresh config; and the block centre for dropped low
+bits was not clamped to the axis, discarding the right and bottom edges — the
+ones the operator is told to aim at.
+
 ### If the screen barely decodes
 
 The failure that matters is auto-exposure. Using a full-white and a full-black

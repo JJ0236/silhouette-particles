@@ -34,14 +34,23 @@ export const grayEncode = (x) => x ^ (x >> 1);
 // Decode using only bits at or above `floor`, then centre the result in the
 // block the discarded bits would have chosen. Sound because gray decoding runs
 // top-down: each bit of the position depends only on bits at or above it.
-export function grayDecodeFrom(g, bits, floor) {
+export function grayDecodeFrom(g, bits, floor, limit) {
   let x = 0;
   for (let b = bits - 1; b >= floor; b--) {
     const gb = (g >> b) & 1;
     const above = (x >> (b + 1)) & 1;
     x |= (gb ^ above) << b;
   }
-  return floor > 0 ? x + (1 << (floor - 1)) : x;
+  if (floor <= 0) return x;
+  // Centre within the block's intersection with the axis. The last block on an
+  // axis whose length is not a multiple of the block size is truncated, so an
+  // unclamped centre lands past the end and the pixel is discarded — losing
+  // precisely the right and bottom edges, the ones the operator is being told
+  // to aim at.
+  const block = 1 << floor;
+  const end = limit === undefined ? x + block : Math.min(x + block, limit);
+  const mid = x + ((end - x) >> 1);
+  return mid < x ? x : mid;
 }
 
 export function grayDecode(g, bits) {
@@ -97,88 +106,97 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
   const n = camW * camH;
   const white = new Float32Array(n), black = new Float32Array(n);
   const codeX = new Int32Array(n), codeY = new Int32Array(n);
-  // Lowest bit index still trusted, per pixel and per axis.
-  //
-  // Bit 0 of a gray code alternates every display cell, so the finest stripes
-  // are far below what a camera resolves when the screen covers only part of
-  // the frame — a quarter of a 1080p frame is a few hundred pixels trying to
-  // carry hundreds of cells. Rejecting a pixel outright when any bit is
-  // ambiguous therefore rejects every pixel, which is exactly what happened:
-  // 0% decoded while the latency pass, which only needs a global average,
-  // worked fine.
-  //
-  // Gray code degrades gracefully instead. Decoding runs from the top down and
-  // each bit of the position depends only on bits at or above it, so dropping
-  // unreliable LOW bits still yields correct HIGH bits — a coarser position,
-  // not a wrong one. Since the map is smoothed and interpolated anyway, coarse
-  // is perfectly usable.
-  const floorX = new Uint8Array(n), floorY = new Uint8Array(n);
-  // Contrast measured from the pattern PAIRS, not from white/black.
-  //
-  // A full-white frame and a full-black frame are exactly the two the camera's
-  // auto-exposure fights hardest: it stops down on one and opens up on the
-  // other, so both come back at similar brightness and their difference — the
-  // thing being used to decide whether a pixel can see the screen at all —
-  // collapses. Measured on a real rig it left about 1% of the screen usable.
-  //
-  // A pattern and its inverse have identical average brightness, so AE cannot
-  // tell them apart and cannot flatten the difference between them. The largest
-  // swing a pixel shows across all such pairs is therefore an AE-proof measure
-  // of how well that pixel sees the display.
   const swing = new Float32Array(n);
-  const pending = new Float32Array(n);
-  let havePending = false, pendingSpec = null;
 
-  function add(spec, camLuma) {
-    if (spec.kind === 'white') { white.set(camLuma); return; }
-    if (spec.kind === 'black') { black.set(camLuma); return; }
-    if (!spec.invert) { pending.set(camLuma); pendingSpec = spec; havePending = true; return; }
-    if (!havePending || pendingSpec.kind !== spec.kind || pendingSpec.bit !== spec.bit) return;
-    havePending = false;
+  // Per-bit evidence, kept so floors can be decided AFTER the final swing is
+  // known. Judging a bit against a running maximum it has just set makes the
+  // relative test unfireable for whichever bit happens to be largest so far —
+  // in practice bit 0, the finest and least trustworthy stripe of all.
+  const magX = new Uint8Array(n * seq.bitsX), magY = new Uint8Array(n * seq.bitsY);
+  // Which bits actually had BOTH halves of their pair captured. A bit whose
+  // pair never completed used to stay silently zero for every pixel, and
+  // forcing a gray bit to zero folds the decoded position into half the axis —
+  // a confident, badly wrong map that nothing in the diagnostics could see.
+  const doneX = new Uint8Array(seq.bitsX), doneY = new Uint8Array(seq.bitsY);
+
+  // One hold's frames are averaged rather than one frame being taken. Every bit
+  // of the map is a single difference of two captures, on a signal this module
+  // treats as marginal by design; averaging what the hold actually gave us is
+  // free and strictly better.
+  const accSum = new Float32Array(n);
+  let accKey = null, accSpec = null, accN = 0;
+  const normBuf = new Float32Array(n);
+  let normSpec = null, haveNorm = false;
+
+  const keyOf = (s) => `${s.kind}:${s.bit ?? -1}:${s.invert ? 1 : 0}:${s.step ?? -1}`;
+
+  function differencePair(spec, a, b) {
     const code = spec.kind === 'x' ? codeX : codeY;
-    const flr = spec.kind === 'x' ? floorX : floorY;
+    const mag = spec.kind === 'x' ? magX : magY;
+    const base = spec.bit * n;
     for (let i = 0; i < n; i++) {
-      const a = pending[i], b = camLuma[i];
-      const d = a - b, ad = d < 0 ? -d : d;
+      const d = a[i] - b[i], ad = d < 0 ? -d : d;
       if (ad > swing[i]) swing[i] = ad;
-      // A bit too close to call raises this pixel's floor rather than
-      // discarding the pixel: everything above the floor is still good. The
-      // threshold is relative to what this pixel has shown it can swing, so a
-      // dim edge of a curved screen is judged by its own standard rather than
-      // the bright centre's.
-      if (ad < Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION)) {
-        if (spec.bit + 1 > flr[i]) flr[i] = spec.bit + 1;
-        continue;
-      }
+      mag[base + i] = ad >= 1 ? 255 : (ad * 255) | 0;
       if (d > 0) code[i] |= 1 << spec.bit;
     }
+    (spec.kind === 'x' ? doneX : doneY)[spec.bit] = 1;
+  }
+
+  function flushHold() {
+    if (!accN || !accSpec) { accKey = null; accSpec = null; accN = 0; return; }
+    const inv = 1 / accN;
+    for (let i = 0; i < n; i++) accSum[i] *= inv;
+    const s = accSpec;
+    if (s.kind === 'white') white.set(accSum);
+    else if (s.kind === 'black') black.set(accSum);
+    else if (!s.invert) { normBuf.set(accSum); normSpec = s; haveNorm = true; }
+    else if (haveNorm && normSpec.kind === s.kind && normSpec.bit === s.bit
+             && s.step === normSpec.step + 1) {
+      // Only pair with the IMMEDIATELY preceding hold. Without that test a
+      // single misattributed frame at a boundary still cross-pairs two
+      // different bits, which reads as noise for every pixel at once.
+      differencePair(s, normBuf, accSum);
+      haveNorm = false;
+    }
+    accSum.fill(0); accN = 0; accKey = null; accSpec = null;
+  }
+
+  function add(spec, camLuma) {
+    const k = keyOf(spec);
+    if (k !== accKey) { flushHold(); accKey = k; accSpec = spec; }
+    for (let i = 0; i < n; i++) accSum[i] += camLuma[i];
+    accN++;
   }
 
   function finish({ minContrast = 0.04, fillIters = 24 } = {}) {
+    flushHold();   // the last invert hold has no following spec to trigger it
+
     const N = w * h;
     const sumU = new Float32Array(N), sumV = new Float32Array(N), cnt = new Float32Array(N);
     let decoded = 0, deepestX = 0, deepestY = 0;
-    // Count WHY pixels are dropped. Coverage alone cannot distinguish "the
-    // camera saw nothing" from "it saw plenty but could not locate it finely
-    // enough", and those need completely different fixes — one is the room or
-    // the aiming, the other is the grid or the framing.
     let rejContrast = 0, rejBlockX = 0, rejBlockY = 0, rejRange = 0, used = 0;
     const maxBlockX = Math.max(2, w * MAX_BLOCK_FRAC);
     const maxBlockY = Math.max(2, h * MAX_BLOCK_FRAC);
+
+    // Bits whose pair never completed are unknown for every pixel, so no floor
+    // may sit below them.
+    let missX = 0, missY = 0;
+    for (let b = 0; b < seq.bitsX; b++) if (!doneX[b]) missX = b + 1;
+    for (let b = 0; b < seq.bitsY; b++) if (!doneY[b]) missY = b + 1;
+
     for (let cy = 0; cy < camH; cy++) {
       for (let cx = 0; cx < camW; cx++) {
         const i = cy * camW + cx;
-        // Below this the pixel never responded to the patterns: off the screen,
-        // deep in shadow, or an edge so oblique the camera gets nothing. Judged
-        // on the pattern pairs, which auto-exposure cannot flatten.
         if (swing[i] < minContrast) { rejContrast++; continue; }
-        // Decode from the trusted bits only, and land in the middle of the
-        // block the unknown low bits would have selected.
-        const fx = floorX[i], fy = floorY[i];
+        const thr = Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION);
+        let fx = missX, fy = missY;
+        for (let b = 0; b < seq.bitsX; b++) if (magX[b * n + i] / 255 < thr) fx = Math.max(fx, b + 1);
+        for (let b = 0; b < seq.bitsY; b++) if (magY[b * n + i] / 255 < thr) fy = Math.max(fy, b + 1);
         if ((1 << fx) > maxBlockX) { rejBlockX++; continue; }
         if ((1 << fy) > maxBlockY) { rejBlockY++; continue; }
-        const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx);
-        const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy);
+        const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx, w);
+        const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy, h);
         if (dx < 0 || dx >= w || dy < 0 || dy >= h) { rejRange++; continue; }
         used++;
         if (fx > deepestX) deepestX = fx;
@@ -198,10 +216,6 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
       if (cnt[d] > 0) { mapU[d] = sumU[d] / cnt[d]; mapV[d] = sumV[d] / cnt[d]; valid[d] = 1; seen++; }
     }
 
-    // Cells no camera pixel happened to land on are filled from their
-    // neighbours. The mapping is smooth by construction — it is a physical
-    // surface — so averaging known neighbours is the honest reconstruction, and
-    // it converges outward from the measured region.
     const filled = Uint8Array.from(valid);
     for (let it = 0; it < fillIters; it++) {
       let added = 0;
@@ -225,32 +239,28 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
       for (let d = 0; d < N; d++) if (!filled[d] && (mapU[d] || mapV[d])) filled[d] = 1;
     }
 
-    // Report the contrast distribution: if coverage is poor this says whether
-    // the camera saw nothing at all, or saw plenty and failed to decode it.
     const sorted = Float32Array.from(swing).sort();
     const q = (f) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))];
+    const missingBits = [];
+    for (let b = 0; b < seq.bitsX; b++) if (!doneX[b]) missingBits.push(`x${b}`);
+    for (let b = 0; b < seq.bitsY; b++) if (!doneY[b]) missingBits.push(`y${b}`);
     return {
       w, h, mapU, mapV, valid, filled, coverage: seen / N, decoded,
       contrast: { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: sorted[sorted.length - 1], threshold: minContrast },
-      // Effective resolution actually achieved: how many display cells the
-      // finest trusted stripe covered. 1 means every cell was resolved.
       resolution: { xCells: 1 << deepestX, yCells: 1 << deepestY, bitsX: seq.bitsX, bitsY: seq.bitsY },
-      // Which parts of the screen the camera never saw: cut off by the frame
-      // edge, hidden behind a speaker, or too oblique to read. Reported as
-      // column and row occupancy so a blocked band is visible as a gap rather
-      // than just lowering one aggregate number.
       reach: reachOf(valid, w, h),
-      // Where the pixels went. Sums to the number of camera pixels examined.
       rejects: { contrast: rejContrast, blockX: rejBlockX, blockY: rejBlockY, range: rejRange, used },
       blocks: { maxX: maxBlockX, maxY: maxBlockY },
+      // Bits whose pair never completed. A non-empty list means frames were
+      // dropped or misattributed, and says exactly which — far more actionable
+      // than a flat zero.
+      missingBits,
     };
   }
 
   return { sequence: seq, add, finish };
 }
 
-// Smooth the measured map. Decoding is quantised to whole display cells, so the
-// raw correspondence is stair-stepped; the real surface is not.
 // Per-column and per-row fraction of cells the camera actually resolved.
 // A speaker in front of the screen shows up as a column of zeros; an edge out
 // of frame shows up as zeros at one end.

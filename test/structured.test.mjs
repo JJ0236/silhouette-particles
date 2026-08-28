@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bitsFor, grayEncode, grayDecode, patternSequence, patternFor, createDecoder, smoothMap } from '../src/structured.js';
+import { bitsFor, grayEncode, grayDecode, grayDecodeFrom, patternSequence, patternFor, createDecoder, smoothMap } from '../src/structured.js';
 
 test('gray code round-trips and neighbours differ by one bit', () => {
   const bits = 9;
@@ -213,4 +213,49 @@ test('decodes when the camera cannot resolve the finest stripes', () => {
   // scrambled one is worse than none.
   assert.ok(monotonic / checked > 0.9,
     `map is not a coherent correspondence: only ${monotonic}/${checked} pairs ordered`);
+});
+
+test('a bit whose pair never completes is reported, not silently decoded as zero', () => {
+  // The defect: an unpaired half used to leave that bit zero for every pixel
+  // with no floor raised, and forcing a gray bit to zero folds the decoded
+  // position into half the axis — a confident, badly wrong map that nothing in
+  // the diagnostics could see.
+  const w = 64, h = 32, camW = 80, camH = 60;
+  const dec = createDecoder({ w, h, camW, camH, holdFrames: 1 });
+  const disp = new Uint8Array(w * h), cam = new Float32Array(camW * camH);
+  const seq = dec.sequence;
+  for (let i = 0; i < seq.length; i++) {
+    const spec = seq.frame(i);
+    // Drop the inverse half of x bit 2 entirely, as a dropped frame would.
+    if (spec.kind === 'x' && spec.bit === 2 && spec.invert) continue;
+    patternFor(spec, w, h, disp);
+    for (let p = 0; p < cam.length; p++) {
+      const dx = Math.round((p % camW) / (camW - 1) * (w - 1));
+      const dy = Math.round(Math.floor(p / camW) / (camH - 1) * (h - 1));
+      cam[p] = (disp[dy * w + dx] / 255) * 0.8 + 0.1;
+    }
+    dec.add(spec, cam);
+  }
+  const map = dec.finish({ minContrast: 0.02 });
+  assert.ok(map.missingBits.includes('x2'),
+    `the unpaired bit must be named, got ${JSON.stringify(map.missingBits)}`);
+  // And it must not be trusted: no pixel may be located more finely than that bit.
+  assert.ok(map.resolution.xCells >= 8,
+    `a missing bit 2 must floor the X resolution, got ${map.resolution.xCells}`);
+});
+
+test('the block centre stays on the axis at the far edge', () => {
+  // grayDecodeFrom centres within the block the dropped low bits would select.
+  // Unclamped, the last block of an axis that is not a multiple of the block
+  // size lands past the end and the pixel is thrown away — losing exactly the
+  // right and bottom edges, the ones the operator is told to aim at.
+  for (const [len, bits] of [[720, 10], [134, 8], [96, 7]]) {
+    for (let floor = 1; floor <= 6; floor++) {
+      for (let x = 0; x < len; x++) {
+        const got = grayDecodeFrom(grayEncode(x), bits, floor, len);
+        assert.ok(got >= 0 && got < len,
+          `len ${len} floor ${floor} x ${x} decoded to ${got}, off the axis`);
+      }
+    }
+  }
 });

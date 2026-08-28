@@ -79,6 +79,7 @@ export const DEFAULTS = {
 
   // look
   glow:          0.35,
+  lagWidthMs:    0,
   renderScale:   1.0,    // multiplier on the render pixel budget; lower if it stutters
 
   // rig

@@ -1,4 +1,5 @@
 import { MASK_W, MASK_H } from './config.js';
+import { specAt, holdAgeAt, sameHold } from './timeline.js';
 import { createDecoder, patternFor, smoothMap } from './structured.js';
 import { patchLayout, calibrationSequence, createAccumulator } from './photometric.js';
 import { mSequence, latencySchedule, crossCorrelate } from './latency.js';
@@ -312,6 +313,9 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       const r = crossCorrelate(emitted, observed, { minLagMs: 0, maxLagMs: 500, stepMs: 4 });
       if (r && Number.isFinite(r.lagMs)) {
         settings.lagMs = Math.round(r.lagMs);
+        // The peak's width IS the uncertainty on that number; storing it lets
+        // the attribution window be sized from a measurement instead of a guess.
+        if (Number.isFinite(r.widthMs)) settings.lagWidthMs = Math.round(r.widthMs);
         save();
       }
       return r;
@@ -341,7 +345,33 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       // previous pattern and the decode is noise. Roughly 180 ms per pattern
       // tolerates being wrong by ±80 ms, which is more than the estimator ever
       // is, and costs about six seconds for the whole sequence.
-      const holdFrames = 11;
+      // Structured light cannot run before the latency is known.
+      //
+      // With lagMs at 0 and a true lag near one hold, every camera frame is
+      // labelled with the pattern painted a whole hold after the one it saw,
+      // the differencing lands across pair boundaries, and the pass returns a
+      // confident zero. The photometric pass already guards this; geometry did
+      // not, so the button an operator reaches for when the auto run fails was
+      // the one that silently could not work.
+      if (!(settings.lagMs > 0)) {
+        const lat = await runLatencyGlobal();
+        if (cancelled || !lat || !(settings.lagMs > 0)) return null;
+      }
+
+      // Attribution has to be stable across the latency's own uncertainty, not
+      // merely settled.
+      //
+      // The old guard compared an age measured at the SHIFTED instant, which
+      // makes it one-sided: if the lag is over-estimated the corrupted frames
+      // land at the start of the next hold and are caught, but if it is
+      // UNDER-estimated they land near the end of the previous hold, comfortably
+      // past the settle window, and every one is admitted. The correlation
+      // returns a rounded value with no sign constraint, so half of all runs got
+      // no protection at all — and a single misattributed frame is enough to
+      // reduce one bit to noise for every pixel simultaneously.
+      const U = Math.max(SETTLE_MS, (settings.lagWidthMs || 0) / 2 + 20);
+      // Hold long enough that the whole uncertainty window fits inside one.
+      const holdFrames = Math.max(11, Math.ceil((2 * U + 60) / 16.7));
       const dec = createDecoder({ w: MASK_W, h: MASK_H, camW, camH, holdFrames });
       const seq = dec.sequence;
       const luma = new Float32Array(camW * camH);
@@ -364,10 +394,14 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
           // exposed, which is one display latency ago — and only believe it if
           // that pattern had already been up for a moment, so a frame captured
           // across a transition is discarded rather than misread.
-          const at = tCam - (settings.lagMs || 0);
+          const at = tCam - settings.lagMs;
           const rec = specAt(painted, at);
-          const since = paintedAgeAt(painted, at);
-          if (!rec || rec.settle || since < SETTLE_MS) return;
+          // Accept only if the SAME pattern was on the wall across the whole
+          // uncertainty window — that is what makes the guard two-sided.
+          const lo = specAt(painted, at - U);
+          const hi = specAt(painted, at + U);
+          if (!rec || !lo || !hi || !sameHold(lo, rec) || !sameHold(rec, hi)) return;
+          if (holdAgeAt(painted, at) < SETTLE_MS) return;
           if (!camera.drawFull(fctx, camW, camH)) return;
           const d = fctx.getImageData(0, 0, camW, camH).data;
           for (let i = 0, o = 0; i < luma.length; i++, o += 4) {
@@ -580,15 +614,6 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
     return cells.length ? s / cells.length : 0;
   }
 
-  // The most recent spec painted at or before t; null before the first paint.
-  // Painted entries are contiguous holds, so "last one at or before" is the
-  // frame that was on the wall at t.
-  function specAt(painted, t) {
-    for (let k = painted.length - 1; k >= 0; k--) {
-      if (painted[k].t <= t) return painted[k].spec;
-    }
-    return null;
-  }
 
   // Geometry is stored beside the photometric map but under its own key: you
   // re-measure the light far more often than you move the camera.
@@ -625,14 +650,6 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
 
   const PREROLL = 30;   // frames at the pass's APL before recording — AE settle
   const SETTLE_MS = 60; // a pattern must have been up this long before a frame counts
-
-  // How long the spec in force at time t had already been showing.
-  function paintedAgeAt(painted, t) {
-    for (let k = painted.length - 1; k >= 0; k--) {
-      if (painted[k].t <= t) return t - painted[k].t;
-    }
-    return 0;
-  }
 
   // ---- latency --------------------------------------------------------------
 

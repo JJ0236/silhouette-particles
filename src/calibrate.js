@@ -303,6 +303,17 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     if (stale(g)) return;
     geoResult = map;
     const card = bodyEl.querySelector('.calib-card');
+    if (map === null && !(settings.lagMs > 0)) {
+      // runStructured returns null when it could not establish a latency, which
+      // is a different problem from unreadable patterns and has a different fix.
+      bodyEl.querySelector('.calib-card').innerHTML =
+        `<div class="calib-warn">Display latency not measured.</div>
+         <div>Geometry cannot be measured without it — a pattern has to be matched
+              to the camera frame that saw it. Use <b>Calibrate everything</b>,
+              which measures latency first.</div>`;
+      renderGeometryActions();
+      return;
+    }
     if (map && map.coverage > 0.05) {
       const pct = (map.coverage * 100).toFixed(0);
       const c = map.contrast;
@@ -339,8 +350,12 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
         : c.max < c.threshold
           ? 'The camera barely saw the patterns at all — the screen is probably out of frame, or room light is swamping the projector. Try the white field button: if white and black look similar on the wall, no software can separate them.'
           : 'The camera saw the patterns but could not decode them, which usually means the latency estimate is wrong. Run Calibrate everything, which measures latency first.';
+      const missing = map?.missingBits?.length
+        ? `<div class="calib-sub">Pattern pairs never completed: ${map.missingBits.join(', ')} —
+           camera frames were dropped or mis-timed, not merely dim.</div>`
+        : '';
       card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>
-        <div>${detail}</div><div class="calib-sub">${breakdown}</div><div>${why}</div>`;
+        <div>${detail}</div>${missing}<div class="calib-sub">${breakdown}</div><div>${why}</div>`;
       setActions([
         { act: 'measure', label: 'Try again', primary: true },
         { act: 'corners', label: 'Use corners instead' },
