@@ -190,6 +190,27 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     ]);
   }
 
+  // Say plainly which parts of the screen the camera cannot see, and why it
+  // matters: those cells contribute no evidence, so nothing standing in front
+  // of them will ever be detected.
+  function reachNote(map) {
+    const r = map.reach;
+    if (!r) return '';
+    const bits = [];
+    if (r.spanFrac < 0.97) {
+      bits.push(`${((1 - r.spanFrac) * 100).toFixed(0)}% of the screen's width is outside
+                 the camera's view (left edge at ${(r.leftEdge * 100).toFixed(0)}%,
+                 right at ${(r.rightEdge * 100).toFixed(0)}%)`);
+    }
+    if (r.blockedFrac > 0.02) {
+      bits.push(`${(r.blockedFrac * 100).toFixed(0)}% of the visible span is blocked —
+                 something is standing in front of the screen, a speaker or similar`);
+    }
+    if (!bits.length) return '<div class="calib-sub">the camera can see the whole screen</div>';
+    return `<div class="calib-sub">${bits.join('. ')}. Those cells are excluded, so nobody
+            in front of them will register.</div>`;
+  }
+
   function renderGeometryActions() {
     setActions([
       { act: 'auto', label: 'Calibrate everything', primary: true },
@@ -285,7 +306,9 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
         <div>${pct}% of the display was seen directly; the rest was filled in from
              its neighbours, which is sound because a physical surface is smooth.</div>
         <div class="calib-sub">pattern response: median ${(c.p50 * 100).toFixed(1)}%,
-             strongest ${(c.max * 100).toFixed(1)}%</div>`;
+             strongest ${(c.max * 100).toFixed(1)}%; located to
+             ${map.resolution.xCells}x${map.resolution.yCells} cells</div>
+        ${reachNote(map)}`;
       setActions([
         { act: 'next', label: 'Next: photometric', primary: true },
         { act: 'measure', label: 'Measure again' },

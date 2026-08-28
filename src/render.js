@@ -5,7 +5,15 @@ import { MASK_W, MASK_H, WORK_W, WORK_H, settings } from './config.js';
 // (Safari's canvas filter support arrived late) and is markedly faster at
 // 1080p, since the expensive blur happens at a fraction of the resolution.
 
-const MAX_W = 1920;   // cap the backing store so a Retina panel can't tank us
+// Budget the backing store by PIXEL COUNT, not by width.
+//
+// A width cap is wrong for a wide wall: 5760x1080 hit the 1920 limit and got
+// rendered at 1920x360 then stretched back out — a third of the horizontal
+// resolution and a third of the vertical, on a display that had the pixels all
+// along. Counting pixels caps the actual cost (fill rate and the bloom chain)
+// while letting an unusual shape use the resolution it has. 5760x1080 is 6.2M
+// pixels, comfortably inside this; a 4K panel at 8.3M is scaled slightly.
+const MAX_PIXELS = 7.0e6;
 
 // The occlusion detector predicts what the camera should see from what we
 // emitted, so it needs a copy of every finished frame at its own grid. This is
@@ -50,7 +58,7 @@ export function createRenderer(view) {
   function resize() {
     const cssW = view.clientWidth || window.innerWidth;
     const cssH = view.clientHeight || window.innerHeight;
-    const scale = Math.min(1, MAX_W / cssW);
+    const scale = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, cssW * cssH)));
     W = Math.max(2, Math.round(cssW * scale));
     H = Math.max(2, Math.round(cssH * scale));
     view.width = W; view.height = H;

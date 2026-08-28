@@ -21,9 +21,28 @@
 // A bit must swing at least this much absolutely, and at least this fraction of
 // what the pixel has shown it can swing, before it is believed.
 const MIN_BIT_SWING = 0.012, BIT_FRACTION = 0.25;
+// How coarse a position may be and still be worth keeping, as a fraction of the
+// axis. Expressed relative to the screen rather than as a bit count, because a
+// fixed count means something completely different on a 96-cell grid than on a
+// 416-cell one — an absolute rule rejected almost every pixel on small grids and
+// left 0.3% coverage.
+const MAX_BLOCK_FRAC = 1 / 12;
 
 export const bitsFor = (n) => Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
 export const grayEncode = (x) => x ^ (x >> 1);
+
+// Decode using only bits at or above `floor`, then centre the result in the
+// block the discarded bits would have chosen. Sound because gray decoding runs
+// top-down: each bit of the position depends only on bits at or above it.
+export function grayDecodeFrom(g, bits, floor) {
+  let x = 0;
+  for (let b = bits - 1; b >= floor; b--) {
+    const gb = (g >> b) & 1;
+    const above = (x >> (b + 1)) & 1;
+    x |= (gb ^ above) << b;
+  }
+  return floor > 0 ? x + (1 << (floor - 1)) : x;
+}
 
 export function grayDecode(g, bits) {
   let x = g;
@@ -78,7 +97,22 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
   const n = camW * camH;
   const white = new Float32Array(n), black = new Float32Array(n);
   const codeX = new Int32Array(n), codeY = new Int32Array(n);
-  const okX = new Uint8Array(n).fill(1), okY = new Uint8Array(n).fill(1);
+  // Lowest bit index still trusted, per pixel and per axis.
+  //
+  // Bit 0 of a gray code alternates every display cell, so the finest stripes
+  // are far below what a camera resolves when the screen covers only part of
+  // the frame — a quarter of a 1080p frame is a few hundred pixels trying to
+  // carry hundreds of cells. Rejecting a pixel outright when any bit is
+  // ambiguous therefore rejects every pixel, which is exactly what happened:
+  // 0% decoded while the latency pass, which only needs a global average,
+  // worked fine.
+  //
+  // Gray code degrades gracefully instead. Decoding runs from the top down and
+  // each bit of the position depends only on bits at or above it, so dropping
+  // unreliable LOW bits still yields correct HIGH bits — a coarser position,
+  // not a wrong one. Since the map is smoothed and interpolated anyway, coarse
+  // is perfectly usable.
+  const floorX = new Uint8Array(n), floorY = new Uint8Array(n);
   // Contrast measured from the pattern PAIRS, not from white/black.
   //
   // A full-white frame and a full-black frame are exactly the two the camera's
@@ -102,16 +136,20 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     if (!havePending || pendingSpec.kind !== spec.kind || pendingSpec.bit !== spec.bit) return;
     havePending = false;
     const code = spec.kind === 'x' ? codeX : codeY;
-    const ok = spec.kind === 'x' ? okX : okY;
+    const flr = spec.kind === 'x' ? floorX : floorY;
     for (let i = 0; i < n; i++) {
       const a = pending[i], b = camLuma[i];
       const d = a - b, ad = d < 0 ? -d : d;
       if (ad > swing[i]) swing[i] = ad;
-      // A bit too close to call is marked unusable rather than guessed — one
-      // wrong bit is one wrong address. The threshold is relative to what this
-      // pixel has already shown it can swing, so a dim corner of a curved
-      // screen is judged by its own standard rather than the bright centre's.
-      if (ad < Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION)) { ok[i] = 0; continue; }
+      // A bit too close to call raises this pixel's floor rather than
+      // discarding the pixel: everything above the floor is still good. The
+      // threshold is relative to what this pixel has shown it can swing, so a
+      // dim edge of a curved screen is judged by its own standard rather than
+      // the bright centre's.
+      if (ad < Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION)) {
+        if (spec.bit + 1 > flr[i]) flr[i] = spec.bit + 1;
+        continue;
+      }
       if (d > 0) code[i] |= 1 << spec.bit;
     }
   }
@@ -119,7 +157,9 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
   function finish({ minContrast = 0.04, fillIters = 24 } = {}) {
     const N = w * h;
     const sumU = new Float32Array(N), sumV = new Float32Array(N), cnt = new Float32Array(N);
-    let decoded = 0;
+    let decoded = 0, deepestX = 0, deepestY = 0;
+    const maxBlockX = Math.max(2, w * MAX_BLOCK_FRAC);
+    const maxBlockY = Math.max(2, h * MAX_BLOCK_FRAC);
     for (let cy = 0; cy < camH; cy++) {
       for (let cx = 0; cx < camW; cx++) {
         const i = cy * camW + cx;
@@ -127,10 +167,15 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
         // deep in shadow, or an edge so oblique the camera gets nothing. Judged
         // on the pattern pairs, which auto-exposure cannot flatten.
         if (swing[i] < minContrast) continue;
-        if (!okX[i] || !okY[i]) continue;
-        const dx = grayDecode(codeX[i], seq.bitsX);
-        const dy = grayDecode(codeY[i], seq.bitsY);
+        // Decode from the trusted bits only, and land in the middle of the
+        // block the unknown low bits would have selected.
+        const fx = floorX[i], fy = floorY[i];
+        if ((1 << fx) > maxBlockX || (1 << fy) > maxBlockY) continue;
+        const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx);
+        const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy);
         if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
+        if (fx > deepestX) deepestX = fx;
+        if (fy > deepestY) deepestY = fy;
         const d = dy * w + dx;
         sumU[d] += cx / (camW - 1);
         sumV[d] += cy / (camH - 1);
@@ -180,6 +225,14 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     return {
       w, h, mapU, mapV, valid, filled, coverage: seen / N, decoded,
       contrast: { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: sorted[sorted.length - 1], threshold: minContrast },
+      // Effective resolution actually achieved: how many display cells the
+      // finest trusted stripe covered. 1 means every cell was resolved.
+      resolution: { xCells: 1 << deepestX, yCells: 1 << deepestY, bitsX: seq.bitsX, bitsY: seq.bitsY },
+      // Which parts of the screen the camera never saw: cut off by the frame
+      // edge, hidden behind a speaker, or too oblique to read. Reported as
+      // column and row occupancy so a blocked band is visible as a gap rather
+      // than just lowering one aggregate number.
+      reach: reachOf(valid, w, h),
     };
   }
 
@@ -188,6 +241,36 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
 
 // Smooth the measured map. Decoding is quantised to whole display cells, so the
 // raw correspondence is stair-stepped; the real surface is not.
+// Per-column and per-row fraction of cells the camera actually resolved.
+// A speaker in front of the screen shows up as a column of zeros; an edge out
+// of frame shows up as zeros at one end.
+function reachOf(valid, w, h) {
+  const cols = new Float32Array(w), rows = new Float32Array(h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (valid[y * w + x]) { cols[x] += 1; rows[y] += 1; }
+    }
+  }
+  for (let x = 0; x < w; x++) cols[x] /= h;
+  for (let y = 0; y < h; y++) rows[y] /= w;
+  let blind = 0, firstSeen = -1, lastSeen = -1;
+  for (let x = 0; x < w; x++) {
+    if (cols[x] > 0.02) { if (firstSeen < 0) firstSeen = x; lastSeen = x; }
+  }
+  for (let x = firstSeen; x >= 0 && x <= lastSeen; x++) if (cols[x] <= 0.02) blind++;
+  return {
+    cols, rows,
+    // Fraction of the screen's width that lies inside what the camera can see
+    // at all — the rest is off-frame.
+    spanFrac: firstSeen < 0 ? 0 : (lastSeen - firstSeen + 1) / w,
+    leftEdge: firstSeen < 0 ? 0 : firstSeen / w,
+    rightEdge: lastSeen < 0 ? 0 : (lastSeen + 1) / w,
+    // Columns inside that span the camera still could not read: something is
+    // standing in front of them.
+    blockedFrac: firstSeen < 0 ? 0 : blind / Math.max(1, lastSeen - firstSeen + 1),
+  };
+}
+
 export function smoothMap(map, radius = 2) {
   const { w, h, mapU, mapV } = map;
   for (const field of [mapU, mapV]) {

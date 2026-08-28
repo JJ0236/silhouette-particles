@@ -328,7 +328,12 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   //
   // It samples the FULL sensor frame rather than the calibrated region, because
   // there is no calibrated region yet — establishing one is the point.
-  function runStructured({ camW = 320, camH = 180 } = {}) {
+  // Decode at high resolution. The finest gray-code stripe alternates every
+  // display cell, so the limit on how finely the screen can be located is how
+  // many camera pixels land on it — and on a rig where the screen is a fraction
+  // of the frame, throwing sensor resolution away before decoding is the
+  // difference between a usable map and none at all.
+  function runStructured({ camW = 960, camH = 540 } = {}) {
     return run(async () => {
       // Hold each pattern long enough that a wrong latency estimate still lands
       // inside the right hold. Two frames was far too tight: if the measured lag

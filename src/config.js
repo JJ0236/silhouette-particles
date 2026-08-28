@@ -4,7 +4,41 @@
 import { OCCLUSION_DEFAULTS } from './occlusion-defaults.js';
 
 export const WORK_W = 160, WORK_H = 90;    // luma + optical-flow grid
-export const MASK_W = 416, MASK_H = 234;   // silhouette mask grid, raised so individual fingers resolve
+// The detector grid follows the DISPLAY's shape, not a fixed 16:9.
+//
+// On a 5760x1080 wall — three projectors edge-blended — a 16:9 grid makes every
+// cell wildly non-square: vertical detail is wasted while horizontal, which is
+// where people and their hands actually move, is starved. Cells should be
+// roughly square so a finger is the same number of cells whichever way it lies.
+//
+// Total cell count is held roughly constant instead, because that is what costs
+// time: the detector runs a few dozen passes over every cell on every camera
+// frame.
+const GRID_CELLS = 97000;
+
+function gridFor(aspect) {
+  const a = Number.isFinite(aspect) && aspect > 0.2 && aspect < 20 ? aspect : 16 / 9;
+  let h = Math.round(Math.sqrt(GRID_CELLS / a));
+  h = Math.max(72, Math.min(400, h));
+  let w = Math.round(h * a);
+  return [w - (w % 2), h - (h % 2)];
+}
+
+function displayAspect() {
+  try {
+    const o = JSON.parse(localStorage.getItem('silhouette-particles/grid') || 'null');
+    if (o && o.aspect) return o.aspect;
+  } catch {}
+  try {
+    if (typeof window !== 'undefined') {
+      if (window.innerWidth > 0 && window.innerHeight > 0) return window.innerWidth / window.innerHeight;
+      if (window.screen?.width > 0) return window.screen.width / window.screen.height;
+    }
+  } catch {}
+  return 16 / 9;
+}
+
+export const [MASK_W, MASK_H] = gridFor(displayAspect());
 
 export const DEFAULTS = {
   // particles

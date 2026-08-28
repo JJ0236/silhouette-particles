@@ -64,6 +64,32 @@ pattern. Those need opposite fixes, which is why the number is shown.
 eye and for judging the room: if white and black look similar on the wall, no
 software will separate them.
 
+## Wide walls, cut-off edges and things in the way
+
+The detector grid follows the **display's** shape rather than a fixed 16:9. On a
+5760x1080 wall a 16:9 grid makes every cell wildly non-square — vertical detail
+wasted, horizontal starved, which is the axis people actually move along. Total
+cell count is held roughly constant instead, since that is what costs time.
+5760x1080 gives a 720x134 grid with 8x8-pixel cells.
+
+The renderer budgets its backing store by pixel count, not width. A width cap
+meant 5760x1080 was drawn at 1920x360 and stretched back out — a third of the
+resolution in both axes, on a display that had the pixels all along.
+
+Gray code degrades rather than failing. Its finest stripe alternates every cell,
+so when the screen covers a fraction of the frame the low bits are below what the
+camera resolves. Rejecting a pixel whenever any bit is ambiguous rejects every
+pixel — that is a 0% read while latency, needing only a global average, works
+perfectly. Because gray decoding runs top-down and each bit of the position
+depends only on bits at or above it, unreliable low bits are simply dropped: the
+position comes out coarser, not wrong, and the map is interpolated anyway. The
+wizard reports the resolution actually achieved.
+
+The report also says which parts of the screen the camera never saw — cut off by
+the frame edge, or blocked by a speaker — as a span and a blocked fraction. Those
+cells are excluded from the detector entirely, so **nobody standing in front of
+them will register**, and it is better to know that than to wonder.
+
 ## Curved and multi-projector screens
 
 The geometry step measures the display→camera mapping with **gray-code

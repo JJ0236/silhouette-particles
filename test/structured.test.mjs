@@ -154,3 +154,63 @@ test('decodes through auto-exposure that flattens white against black', () => {
     `AE flattened the read: only ${(map.coverage * 100).toFixed(1)}% decoded ` +
     `(contrast p50 ${map.contrast.p50.toFixed(3)})`);
 });
+
+test('decodes when the camera cannot resolve the finest stripes', () => {
+  // The rig failure: the screen covers a fraction of the frame, so bit 0 —
+  // which alternates every display cell — is far below what the camera
+  // resolves. Rejecting a pixel whenever any bit is ambiguous rejected every
+  // pixel and reported 0% while latency, needing only a global average, worked.
+  const w = 96, h = 54;
+  const camW = 72, camH = 40;              // far too few pixels to resolve bit 0
+  const truth = curvedCamera(w, h, camW, camH);
+  const dec = createDecoder({ w, h, camW, camH, holdFrames: 1 });
+  const disp = new Uint8Array(w * h);
+  const cam = new Float32Array(camW * camH);
+  const seq = dec.sequence;
+
+  // Each camera pixel integrates every display cell that falls inside it, which
+  // is what destroys the fine bits.
+  const members = Array.from({ length: camW * camH }, () => []);
+  for (let dy = 0; dy < h; dy++) {
+    for (let dx = 0; dx < w; dx++) {
+      const [cu, cv] = truth(dx / (w - 1), dy / (h - 1));
+      const cx = Math.round(cu * (camW - 1)), cy = Math.round(cv * (camH - 1));
+      if (cx >= 0 && cx < camW && cy >= 0 && cy < camH) members[cy * camW + cx].push(dy * w + dx);
+    }
+  }
+  for (let i = 0; i < seq.length; i++) {
+    const spec = seq.frame(i);
+    patternFor(spec, w, h, disp);
+    for (let p = 0; p < cam.length; p++) {
+      const m = members[p];
+      if (!m.length) { cam[p] = 0.05; continue; }
+      let s = 0;
+      for (const d of m) s += disp[d] / 255;
+      cam[p] = (s / m.length) * 0.8 + 0.08;
+    }
+    dec.add(spec, cam);
+  }
+  const map = dec.finish({ minContrast: 0.03 });
+  assert.ok(map.coverage > 0, `nothing decoded at all (contrast p90 ${map.contrast.p90.toFixed(3)})`);
+  assert.ok(map.resolution.xCells >= 1, 'reports the resolution actually achieved');
+  // Coarse is fine; wrong is not. Check the recovered map is monotonic across
+  // the screen, i.e. it really is a correspondence and not noise.
+  let checked = 0, monotonic = 0;
+  for (let dy = 10; dy < h - 10; dy += 4) {
+    for (let dx = 10; dx < w - 12; dx += 4) {
+      const a = dy * w + dx, b = dy * w + dx + 8;
+      // `filled` is what the warp actually samples through — direct hits are
+      // sparse when the camera has few pixels, and interpolation is the point.
+      if (!map.filled[a] || !map.filled[b]) continue;
+      checked++;
+      if (map.mapU[b] > map.mapU[a]) monotonic++;
+    }
+  }
+  assert.ok(checked > 10, 'enough pairs to judge');
+  // Coarse is acceptable; incoherent is not. The recovered map must still be a
+  // monotonic correspondence across the screen, which is what the warp relies
+  // on — an under-resolved map that still runs left-to-right is usable, a
+  // scrambled one is worse than none.
+  assert.ok(monotonic / checked > 0.9,
+    `map is not a coherent correspondence: only ${monotonic}/${checked} pairs ordered`);
+});
