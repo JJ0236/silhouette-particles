@@ -121,7 +121,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     stepsEl.innerHTML = TITLES.map((t, i) =>
       `<span class="${i + 1 === step ? 'on' : i + 1 < step ? 'done' : ''}">${i + 1} ${t}</span>`
     ).join('');
-    titleEl.textContent = TITLES[step - 1];
+    titleEl.textContent = TITLES[step - 1] + (appVersion ? `  ·  v${appVersion}` : '');
   }
 
   // ---- step flow ---------------------------------------------------------------
@@ -155,6 +155,10 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
   // fallback for a projector or camera that the pattern sequence cannot get a
   // clean read from.
   let manualCorners = false;
+  let appVersion = '';
+  if (typeof window !== 'undefined' && window.installation?.version) {
+    window.installation.version().then((v) => { appVersion = v; showSteps(); });
+  }
   let geoResult = null;
 
   async function runAutoAll() {
@@ -321,12 +325,22 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
         ? `Strongest response was ${(c.max * 100).toFixed(1)}% and the median pixel
            ${(c.p50 * 100).toFixed(1)}%, against a ${(c.threshold * 100).toFixed(0)}% threshold.`
         : '';
+      const r = map?.rejects;
+      const breakdown = r
+        ? `Of the camera pixels examined: ${r.used} located, ${r.contrast} never
+           responded to the patterns, ${r.blockX} could not be placed finely enough
+           horizontally, ${r.blockY} vertically, ${r.range} decoded off-screen.`
+        : '';
       const why = !c ? ''
+        : r && r.blockY > r.used && r.blockY > r.contrast
+          ? 'The camera saw the patterns but could not place them precisely enough VERTICALLY. On a wide short wall there are very few camera pixels per grid row — move the camera closer or zoom in so the screen fills more of the frame.'
+        : r && r.blockX > r.used && r.blockX > r.contrast
+          ? 'The camera saw the patterns but could not place them precisely enough horizontally — the screen is too small in frame.'
         : c.max < c.threshold
           ? 'The camera barely saw the patterns at all — the screen is probably out of frame, or room light is swamping the projector. Try the white field button: if white and black look similar on the wall, no software can separate them.'
           : 'The camera saw the patterns but could not decode them, which usually means the latency estimate is wrong. Run Calibrate everything, which measures latency first.';
       card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>
-        <div>${detail}</div><div>${why}</div>`;
+        <div>${detail}</div><div class="calib-sub">${breakdown}</div><div>${why}</div>`;
       setActions([
         { act: 'measure', label: 'Try again', primary: true },
         { act: 'corners', label: 'Use corners instead' },

@@ -26,7 +26,7 @@ const MIN_BIT_SWING = 0.012, BIT_FRACTION = 0.25;
 // fixed count means something completely different on a 96-cell grid than on a
 // 416-cell one — an absolute rule rejected almost every pixel on small grids and
 // left 0.3% coverage.
-const MAX_BLOCK_FRAC = 1 / 12;
+const MAX_BLOCK_FRAC = 1 / 6;
 
 export const bitsFor = (n) => Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
 export const grayEncode = (x) => x ^ (x >> 1);
@@ -158,6 +158,11 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     const N = w * h;
     const sumU = new Float32Array(N), sumV = new Float32Array(N), cnt = new Float32Array(N);
     let decoded = 0, deepestX = 0, deepestY = 0;
+    // Count WHY pixels are dropped. Coverage alone cannot distinguish "the
+    // camera saw nothing" from "it saw plenty but could not locate it finely
+    // enough", and those need completely different fixes — one is the room or
+    // the aiming, the other is the grid or the framing.
+    let rejContrast = 0, rejBlockX = 0, rejBlockY = 0, rejRange = 0, used = 0;
     const maxBlockX = Math.max(2, w * MAX_BLOCK_FRAC);
     const maxBlockY = Math.max(2, h * MAX_BLOCK_FRAC);
     for (let cy = 0; cy < camH; cy++) {
@@ -166,14 +171,16 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
         // Below this the pixel never responded to the patterns: off the screen,
         // deep in shadow, or an edge so oblique the camera gets nothing. Judged
         // on the pattern pairs, which auto-exposure cannot flatten.
-        if (swing[i] < minContrast) continue;
+        if (swing[i] < minContrast) { rejContrast++; continue; }
         // Decode from the trusted bits only, and land in the middle of the
         // block the unknown low bits would have selected.
         const fx = floorX[i], fy = floorY[i];
-        if ((1 << fx) > maxBlockX || (1 << fy) > maxBlockY) continue;
+        if ((1 << fx) > maxBlockX) { rejBlockX++; continue; }
+        if ((1 << fy) > maxBlockY) { rejBlockY++; continue; }
         const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx);
         const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy);
-        if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
+        if (dx < 0 || dx >= w || dy < 0 || dy >= h) { rejRange++; continue; }
+        used++;
         if (fx > deepestX) deepestX = fx;
         if (fy > deepestY) deepestY = fy;
         const d = dy * w + dx;
@@ -233,6 +240,9 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
       // column and row occupancy so a blocked band is visible as a gap rather
       // than just lowering one aggregate number.
       reach: reachOf(valid, w, h),
+      // Where the pixels went. Sums to the number of camera pixels examined.
+      rejects: { contrast: rejContrast, blockX: rejBlockX, blockY: rejBlockY, range: rejRange, used },
+      blocks: { maxX: maxBlockX, maxY: maxBlockY },
     };
   }
 
