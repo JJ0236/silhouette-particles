@@ -19,9 +19,13 @@ are vendored in `vendor/`, so it runs with the network unplugged.
 ## Calibrating: press one button
 
 `C` → **Calibrate everything**. It measures the display latency, then the
-screen's shape, then its brightness, then checks the piece cannot see its own
-output, and prints what it found. About a minute, no input, nobody in front of
-the screen.
+screen's shape, then its brightness, then the lens margin, then checks the
+piece cannot see its own output — about a minute, nobody in front of the
+screen — and **saves the moment geometry and brightness are in**, not on a
+Done button, so a failed check afterwards cannot throw the rig away. It then
+asks you to stand in front of the screen for the six-second stand-in pass,
+which tunes the detection thresholds to a real body; Skip keeps the current
+ones.
 
 The order is forced by dependency rather than preference: structured light has
 to know when a pattern reaches the camera, photometry is measured per display
@@ -382,8 +386,18 @@ webcam frame
   back into itself. Only motion inside your body counts as a push — which also means a
   person walking past in the background can't disturb it.
 - **`particles.js`** — each particle samples the flow field, gets thrown, drifts, and
-  eases back toward its rest position. A weak outward nudge along the mask gradient
-  keeps your body from filling with stuck dots when you stand still.
+  eases back toward its rest position. The outline is an attractor: a signed
+  distance field from the body (`distance.js`) drives particles inside it out to
+  the edge, draws particles just outside back in, and suspends the return-to-rest
+  pull while they are held, so a body sweeps its interior clean and wears its
+  particles as a rim. `outline pull` and `outline reach` in the panel set the
+  strength and the capture distance in cells.
+- **`contour.js`** — the outline itself is a vector stroke, not a raster band. The
+  band was painted one detector cell at a time (about eight wall pixels) and read
+  as chunky and wavering; marching squares on the smoothed mask puts each vertex
+  where the mask actually crosses 0.5 between two cells, a couple of corner-cutting
+  passes round the stair-steps, and loops shorter than a few cells are dropped as
+  speckle. The bloom chain gives the line its halo.
 - **`render.js`** — bloom by downscale/upscale ping-pong rather than `ctx.filter`,
   which is both universal across browsers and much cheaper at 1080p.
 

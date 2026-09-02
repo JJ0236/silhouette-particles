@@ -7,7 +7,7 @@ import { sample, gradient } from './field.js';
 // Slider values are kept in friendly ranges (0..100) and scaled here, so the
 // panel reads sensibly without the physics constants leaking into the UI.
 const PUSH_SCALE      = 0.02;
-const OCCUPANCY_SCALE = 0.004;
+const PULL_SCALE      = 0.0006;
 const DRIFT_SCALE     = 0.00030;
 
 export function createParticles(count) {
@@ -41,7 +41,9 @@ export function createParticles(count) {
   // stray mask flicker in an empty room can't shove the field around.
   function update(flow, seg, t, gain = 1) {
     const push   = settings.push * PUSH_SCALE * gain;
-    const occ    = settings.occupancy * OCCUPANCY_SCALE * gain;
+    // Pull toward the outline, per cell of distance, in normalised units.
+    const pull   = settings.outlinePull * PULL_SCALE * gain;
+    const reach  = settings.outlineReach;
     const ret    = settings.returnForce;
     const damp   = settings.damping;
     const drift  = settings.drift * DRIFT_SCALE;
@@ -60,14 +62,33 @@ export function createParticles(count) {
         ax += sample(flow.vx, WORK_W, WORK_H, u, v) * push * inf;
         ay += sample(flow.vy, WORK_W, WORK_H, u, v) * push * inf;
 
-        // "You occupy space": nudge particles down the mask gradient, i.e.
-        // outward. Without this, standing still lets particles settle inside
-        // your outline and the silhouette reads as broken.
-        const m = sample(seg.mask, MASK_W, MASK_H, u, v);
-        if (m > 0.01) {
-          gradient(seg.influence, MASK_W, MASK_H, u, v, g);
-          ax -= g[0] * occ * m;
-          ay -= g[1] * occ * m;
+      }
+
+      // The outline is an attractor. Inside the body a particle is driven
+      // OUT to the edge; just outside it is drawn back IN to the edge; on the
+      // edge it settles. So a body sweeps its interior clean and wears its
+      // particles as a rim, instead of them sitting inside the silhouette
+      // where the return-to-rest pull used to hold them.
+      //
+      // The signed distance field points at the edge from everywhere, where
+      // the old mask-gradient nudge was zero in the interior — which is why
+      // particles lingered there.
+      let held = 0;
+      if (seg.sdf) {
+        const d = sample(seg.sdf, MASK_W, MASK_H, u, v);
+        if (d < reach) {
+          gradient(seg.sdf, MASK_W, MASK_H, u, v, g);
+          // Unit direction toward increasing distance (outward); the force
+          // is toward d = 0, capped so a deep interior is a shove, not a slingshot.
+          const gl = Math.hypot(g[0], g[1]);
+          if (gl > 1e-6) {
+            const towardEdge = -Math.max(-4, Math.min(4, d)) * pull / gl;
+            ax += g[0] * towardEdge;
+            ay += g[1] * towardEdge;
+          }
+          // Within reach the outline owns the particle: rest is suspended so
+          // it can stay on the line, and fully so inside the body.
+          held = d < 0 ? 1 : 1 - d / reach;
         }
       }
 
@@ -77,8 +98,8 @@ export function createParticles(count) {
       ay += Math.sin(td * 1.3 + p * 1.7) * drift;
 
       // Ease back toward rest: the piece heals itself after each person.
-      ax += (rx[i] - u) * ret;
-      ay += (ry[i] - v) * ret;
+      ax += (rx[i] - u) * ret * (1 - held);
+      ay += (ry[i] - v) * ret * (1 - held);
 
       let nvx = (vx[i] + ax) * damp;
       let nvy = (vy[i] + ay) * damp;

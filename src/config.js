@@ -44,7 +44,8 @@ export const DEFAULTS = {
   // particles
   particles:     12000,
   push:          30,     // how hard your motion throws them
-  occupancy:     0.9,    // how hard your body displaces them while still
+  outlinePull:   1.0,    // how hard the outline sweeps its interior and gathers particles
+  outlineReach:  12,     // cells outside the outline from which particles are gathered
   returnForce:   0.006,  // pull back toward rest position
   damping:       0.90,
   maxSpeed:      0.030,  // ceiling, screen widths per frame (~58px at 1920)

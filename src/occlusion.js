@@ -17,6 +17,7 @@ import { erode, open, close, components, removeSmall, fillHoles, hysteresis,
          temporalMedian3, linearise } from './morph.js';
 import { predictLow } from './photometric.js';
 import { boxBlur, dilate, contourBand, sample, clamp } from './field.js';
+import { signedDistance } from './distance.js';
 
 export { OCCLUSION_DEFAULTS };
 
@@ -255,6 +256,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
   const bin = new Uint8Array(N);
   const rim = new Float32Array(N);
   const influence = new Float32Array(N);
+  const sdf = new Float32Array(N).fill(16);
   const motion = new Float32Array(NW);
   const fast = new Float32Array(N);
 
@@ -298,7 +300,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
     refFrac: 0, lagStarved: false, veto: false, vetoReason: '', observableFrac: 0,
     lagMs: 0, suppressed: false, smoothness: 0,
   };
-  const self = { update, mask, bin, rim, influence, motion, coverage: 0, suppress, reset, diag };
+  const self = { update, mask, bin, rim, influence, sdf, motion, coverage: 0, suppress, reset, diag };
 
   // Linear light for a fractional camera code (the prediction is not integer).
   function linF(code) {
@@ -342,7 +344,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
   // the previous-mask exclusion clean for the next frame.
   function finishIdle() {
     mask.fill(0); fast.fill(0); rim.fill(0); influence.fill(0); motion.fill(0);
-    bin.fill(0);
+    bin.fill(0); sdf.fill(cfg('outlineReach') ?? 16);
     self.coverage = 0;
     diag.veto = false; diag.vetoReason = '';
     for (const m of medHist) m.fill(0);
@@ -358,6 +360,8 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
     }
     contourBand(mask, rim, w, h, cfg('rimWidth'), cfg('rimGain'));
     boxBlur(mask, influence, w, h, cfg('influence'), tmpF);
+    // The particles' view of the body: how far to the edge, and which way.
+    signedDistance(bin, w, h, sdf, cfg('outlineReach'));
     const iw = workW > 1 ? 1 / (workW - 1) : 0, ih = workH > 1 ? 1 / (workH - 1) : 0;
     for (let y = 0; y < workH; y++) {
       const v = y * ih;
@@ -661,6 +665,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
 
   function reset() {
     mask.fill(0); bin.fill(0); rim.fill(0); influence.fill(0); motion.fill(0); fast.fill(0);
+    sdf.fill(cfg('outlineReach') ?? 16);
     for (const m of medHist) m.fill(0);
     medHead = 0;
     gains.fill(1);

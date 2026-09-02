@@ -1,4 +1,5 @@
 import { MASK_W, MASK_H, WORK_W, WORK_H, settings } from './config.js';
+import { traceIsolines } from './contour.js';
 
 // Black void, additive light. The bloom is done with a downscale/upscale
 // ping-pong rather than ctx.filter — that trick works in every browser
@@ -96,12 +97,30 @@ export function createRenderer(view) {
     sctx.fillRect(0, 0, W, H);
     sctx.globalCompositeOperation = 'lighter';
 
-    // Silhouette contour, faded by presence so an empty room stays empty.
-    const [orr, org, orb] = hsl(settings.outlineHue, 0.85, 0.6);
-    paintRim(seg.rim, orr, org, orb, presence);
-    sctx.imageSmoothingEnabled = true;
-    sctx.imageSmoothingQuality = 'high';
-    sctx.drawImage(rimCanvas, 0, 0, W, H);
+    // Silhouette contour: one continuous stroke traced from the mask, faded
+    // by presence so an empty room stays empty. A vector line, because the
+    // raster band it replaces was painted per detector cell — about eight
+    // wall pixels — and read as a chunky, wavering edge. The bloom below
+    // gives it its halo.
+    if (seg.mask && presence > 0.001 && seg.coverage !== 0) {
+      const loops = traceIsolines(seg.mask, MASK_W, MASK_H, { minLength: 6, smooth: 2 });
+      if (loops.length) {
+        const [orr, org, orb] = hsl(settings.outlineHue, 0.85, 0.6);
+        const a = Math.min(1, presence * settings.rimGain / 1.7);
+        sctx.strokeStyle = `rgba(${orr},${org},${orb},${a})`;
+        // rimWidth is the band's half-width in cells; the stroke is the full width.
+        sctx.lineWidth = Math.max(1, settings.rimWidth * 2 * (W / MASK_W));
+        sctx.lineJoin = 'round';
+        sctx.lineCap = 'round';
+        sctx.beginPath();
+        for (const { pts, closed } of loops) {
+          sctx.moveTo(pts[0] * W, pts[1] * H);
+          for (let k = 2; k < pts.length; k += 2) sctx.lineTo(pts[k] * W, pts[k + 1] * H);
+          if (closed) sctx.closePath();
+        }
+        sctx.stroke();
+      }
+    }
 
     // Particles.
     const s = Math.max(1, settings.particleSize * (W / 1920));

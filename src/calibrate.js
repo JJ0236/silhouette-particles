@@ -87,7 +87,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     switch (act) {
       case 'next':   if (step === 1) calib.save(); showStep(step + 1); break;
       case 'back':   showStep(step - 1); break;
-      case 'skip':   showStep(step + 1); break;
+      case 'skip':   if (skipResolve) skipResolve(); else showStep(step + 1); break;
       case 'start':  fireStart(); break;
       case 'measure': runGeometry(); break;
       case 'auto': runAutoAll(); break;
@@ -180,21 +180,84 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       renderGeometryActions();
       return;
     }
-    const rows = rep.steps.map((st) =>
+    const rowsOf = (steps) => steps.map((st) =>
       `<div class="calib-row ${st.ok ? 'ok' : 'bad'}"><b>${st.name}</b>
          <span>${st.value}</span><i>${st.note ?? ''}</i></div>`).join('');
     const geoStep = rep.steps.find((st) => st.name === 'geometry');
     const geoWhy = geoStep && !geoStep.ok && rep.map ? geometryFailure(rep.map) : '';
-    card.innerHTML = `<div class="${rep.ok ? 'calib-ok' : 'calib-warn'}">
-        ${rep.ok ? 'Calibrated' : 'Finished with problems'}</div>${rows}${geoWhy}`;
-    if (rep.ok) onPhoto?.(rep.photo);
-    setActions([
-      ...(rep.ok ? [{ act: 'save', label: 'Done', primary: true }] : []),
-      { act: 'auto', label: 'Run again', primary: !rep.ok },
+
+    // Saved HERE, not on a Done button. Geometry and photometry are the
+    // calibration; the loop check and stand-in judge and tune it. A failed
+    // loop check or a cancelled stand-in used to leave the rig marked
+    // uncalibrated and asking for corners on the next launch, with a perfectly
+    // good map and photo sitting in storage.
+    const measured = !!rep.map && rep.map.coverage > 0.05 && !!rep.photo;
+    if (measured) { calib.save(); save(); onPhoto?.(rep.photo); }
+
+    const finalActions = () => setActions([
+      { act: 'save', label: 'Close', primary: true },
+      { act: 'auto', label: 'Run again' },
       { act: 'corners', label: 'Mark corners instead' },
-      { act: 'cancel', label: 'Cancel' },
     ]);
+    if (!measured) {
+      card.innerHTML = `<div class="calib-warn">Finished with problems</div>${rowsOf(rep.steps)}${geoWhy}`;
+      setActions([
+        { act: 'auto', label: 'Run again', primary: true },
+        { act: 'corners', label: 'Mark corners instead' },
+        { act: 'cancel', label: 'Cancel' },
+      ]);
+      return;
+    }
+
+    // Stand-in: the one pass that needs a person. Armed rather than started,
+    // so there is time to walk in.
+    card.innerHTML = `<div class="calib-ok">Measured and saved.</div>${rowsOf(rep.steps)}
+      <p class="calib-big">Now stand in front of the screen, then press Start.</p>
+      <p>Six seconds. Wear the lightest top you expect on a visitor — the
+         thresholds have to catch that one. Skip keeps the current thresholds.</p>`;
+    setActions([
+      { act: 'start', label: 'Start stand-in', primary: true },
+      { act: 'skip', label: 'Skip' },
+    ]);
+    // 'skip' advances a step in the click handler; here it means "finish".
+    const skipped = new Promise((resolve) => { skipResolve = resolve; });
+    const go = await Promise.race([armed(g), skipped.then(() => false)]);
+    skipResolve = null;
+    if (stale(g)) return;
+    if (!go) {
+      card.innerHTML = `<div class="calib-ok">Calibrated</div>${rowsOf(rep.steps)}
+        <div class="calib-sub">stand-in skipped — thresholds unchanged</div>`;
+      finalActions();
+      return;
+    }
+    enable('start', false); enable('skip', false);
+    if (!await countdown(3, g)) return;
+    root.classList.add('dim');
+    let res = null;
+    try {
+      res = await photocal.runStandIn({ seconds: 6 });
+    } catch (e) {
+      console.warn('[calibrate] stand-in failed:', e);
+    } finally {
+      if (!stale(g)) root.classList.remove('dim');
+    }
+    if (stale(g)) return;
+    const steps = [...rep.steps];
+    if (res?.suggested) {
+      results.standIn = res;
+      applyStandIn();
+      steps.push({ name: 'stand-in', ok: true,
+        value: `body ratio p50 ${fmt(res.body.p50, 2)}`,
+        note: `void floor ${res.suggested.voidFloor}% · τ ${fmt(res.suggested.tauLow, 2)}/${fmt(res.suggested.tauHigh, 2)} applied` });
+    } else {
+      steps.push({ name: 'stand-in', ok: false, value: res ? 'nobody detected' : 'failed',
+        note: 'stand closer, or the map is off — thresholds unchanged' });
+    }
+    card.innerHTML = `<div class="${steps.every((s) => s.ok) ? 'calib-ok' : 'calib-warn'}">
+        ${steps.every((s) => s.ok) ? 'Calibrated' : 'Calibrated, with notes'}</div>${rowsOf(steps)}`;
+    finalActions();
   }
+  let skipResolve = null;
 
   // Why a structured-light pass came back empty, from the decoder's own
   // counters. Shared by the geometry-only button and the one-button run: the
@@ -317,9 +380,11 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
          flat, and on a 120° screen that is around nine cells out in the middle
          — exactly where people stand.</p>
       <p><b>Calibrate everything</b> measures latency, then the screen's shape,
-         then its brightness, then checks the piece cannot see its own output —
-         about a minute, no input needed. Nothing between the camera and the
-         screen while it runs.</p>
+         then its brightness, then the lens margin, then checks the piece cannot
+         see its own output — about a minute, nothing between the camera and the
+         screen. It saves as it goes. At the end it asks you to stand in front
+         of the screen for a six-second pass that tunes the thresholds to a real
+         body.</p>
       <div class="calib-count"></div>
       <div class="calib-progress"><div class="bar"></div></div>
       <div class="calib-card"></div>`;

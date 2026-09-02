@@ -459,6 +459,20 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
         report.photo = photo;
       }
 
+      // Registration: how far the prediction lands from the wall, which sets
+      // the lens-safety margin. Applied directly — the wizard's "apply" button
+      // was one more thing for an operator to know about.
+      if (photo) {
+        const reg = await runRegistration();
+        if (cancelled) return null;
+        const regOk = !!reg && reg.found > 0;
+        if (regOk && reg.suggestedErode !== settings.predErode) { settings.predErode = reg.suggestedErode; save(); }
+        step('registration', regOk ? `${reg.found}/${reg.sites} lines` : 'grid not found', regOk,
+          regOk ? `max residual ${reg.maxResidualCells.toFixed(2)} cells → lens margin ${reg.suggestedErode}`
+                : 'mirror setting or geometry is wrong');
+        report.reg = reg;
+      }
+
       if (photo) {
         const loop = await runLoopCheck({ seconds: 4 });
         if (cancelled) return null;
