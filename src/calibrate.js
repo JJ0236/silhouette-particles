@@ -183,8 +183,10 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
     const rows = rep.steps.map((st) =>
       `<div class="calib-row ${st.ok ? 'ok' : 'bad'}"><b>${st.name}</b>
          <span>${st.value}</span><i>${st.note ?? ''}</i></div>`).join('');
+    const geoStep = rep.steps.find((st) => st.name === 'geometry');
+    const geoWhy = geoStep && !geoStep.ok && rep.map ? geometryFailure(rep.map) : '';
     card.innerHTML = `<div class="${rep.ok ? 'calib-ok' : 'calib-warn'}">
-        ${rep.ok ? 'Calibrated' : 'Finished with problems'}</div>${rows}`;
+        ${rep.ok ? 'Calibrated' : 'Finished with problems'}</div>${rows}${geoWhy}`;
     if (rep.ok) onPhoto?.(rep.photo);
     setActions([
       ...(rep.ok ? [{ act: 'save', label: 'Done', primary: true }] : []),
@@ -192,6 +194,43 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
       { act: 'corners', label: 'Mark corners instead' },
       { act: 'cancel', label: 'Cancel' },
     ]);
+  }
+
+  // Why a structured-light pass came back empty, from the decoder's own
+  // counters. Shared by the geometry-only button and the one-button run: the
+  // latter used to say only "no patterns decoded", which is the one line an
+  // operator cannot act on — the numbers behind it decide whether the fix is
+  // the camera, the room, or the latency.
+  function geometryFailure(map) {
+    const c = map?.contrast;
+    const detail = c
+      ? `Strongest response was ${(c.max * 100).toFixed(1)}% and the median pixel
+         ${(c.p50 * 100).toFixed(1)}%, against a ${(c.threshold * 100).toFixed(0)}% threshold.`
+      : '';
+    const r = map?.rejects;
+    const breakdown = r
+      ? `Of the camera pixels examined: ${r.used} located, ${r.contrast} never
+         responded to the patterns, ${r.blockX} could not be placed finely enough
+         horizontally, ${r.blockY} vertically, ${r.range} decoded off-screen,
+         ${r.stray ?? 0} disagreed with the pixels beside them (noise).`
+      : '';
+    const located = map && map.coverage > 0
+      ? `${(map.coverage * 100).toFixed(1)}% of display cells were hit directly, located to
+         ${map.resolution.xCells}x${map.resolution.yCells}-cell blocks.`
+      : '';
+    const why = !c ? ''
+      : r && r.blockY > r.used && r.blockY > r.contrast
+        ? 'The camera saw the patterns but could not place them precisely enough VERTICALLY. On a wide short wall there are very few camera pixels per grid row — move the camera closer or zoom in so the screen fills more of the frame.'
+      : r && r.blockX > r.used && r.blockX > r.contrast
+        ? 'The camera saw the patterns but could not place them precisely enough horizontally — the screen is too small in frame.'
+      : c.max < c.threshold
+        ? 'The camera barely saw the patterns at all — the screen is probably out of frame, or room light is swamping the projector. Try the white field button: if white and black look similar on the wall, no software can separate them.'
+        : 'The camera saw the patterns but could not decode them, which usually means the latency estimate is wrong. Run Calibrate everything, which measures latency first.';
+    const missing = map?.missingBits?.length
+      ? `<div class="calib-sub">Pattern pairs never completed: ${map.missingBits.join(', ')} —
+         camera frames were dropped or mis-timed, not merely dim.</div>`
+      : '';
+    return `<div>${detail}</div>${missing}<div class="calib-sub">${breakdown} ${located}</div><div>${why}</div>`;
   }
 
   // Say plainly which parts of the screen the camera cannot see, and why it
@@ -331,31 +370,7 @@ export function createCalibrator({ camera, calib, warp, ring, occlusion, rendere
         { act: 'cancel', label: 'Cancel' },
       ]);
     } else {
-      const c = map?.contrast;
-      const detail = c
-        ? `Strongest response was ${(c.max * 100).toFixed(1)}% and the median pixel
-           ${(c.p50 * 100).toFixed(1)}%, against a ${(c.threshold * 100).toFixed(0)}% threshold.`
-        : '';
-      const r = map?.rejects;
-      const breakdown = r
-        ? `Of the camera pixels examined: ${r.used} located, ${r.contrast} never
-           responded to the patterns, ${r.blockX} could not be placed finely enough
-           horizontally, ${r.blockY} vertically, ${r.range} decoded off-screen.`
-        : '';
-      const why = !c ? ''
-        : r && r.blockY > r.used && r.blockY > r.contrast
-          ? 'The camera saw the patterns but could not place them precisely enough VERTICALLY. On a wide short wall there are very few camera pixels per grid row — move the camera closer or zoom in so the screen fills more of the frame.'
-        : r && r.blockX > r.used && r.blockX > r.contrast
-          ? 'The camera saw the patterns but could not place them precisely enough horizontally — the screen is too small in frame.'
-        : c.max < c.threshold
-          ? 'The camera barely saw the patterns at all — the screen is probably out of frame, or room light is swamping the projector. Try the white field button: if white and black look similar on the wall, no software can separate them.'
-          : 'The camera saw the patterns but could not decode them, which usually means the latency estimate is wrong. Run Calibrate everything, which measures latency first.';
-      const missing = map?.missingBits?.length
-        ? `<div class="calib-sub">Pattern pairs never completed: ${map.missingBits.join(', ')} —
-           camera frames were dropped or mis-timed, not merely dim.</div>`
-        : '';
-      card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>
-        <div>${detail}</div>${missing}<div class="calib-sub">${breakdown}</div><div>${why}</div>`;
+      card.innerHTML = `<div class="calib-warn">Could not read the patterns.</div>${geometryFailure(map)}`;
       setActions([
         { act: 'measure', label: 'Try again', primary: true },
         { act: 'corners', label: 'Use corners instead' },

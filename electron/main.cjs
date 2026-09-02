@@ -55,11 +55,27 @@ function startServer() {
         res.writeHead(404).end('not found');
       }
     });
-    server.on('error', reject);
-    // Port 0: let the OS pick a free one, so two copies never collide.
-    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    // A FIXED port, because the port is part of the origin.
+    //
+    // localStorage, IndexedDB and Chromium's per-origin camera device IDs are
+    // all keyed on scheme+host+port. Letting the OS pick a free port (port 0)
+    // gave every launch a brand-new origin, so the corner quad, the measured
+    // geometry map and the photometric map were all written to storage nobody
+    // would ever read again: a fully calibrated installation came back after a
+    // power cycle asking to be calibrated. If the port is taken — another copy
+    // running, or some unrelated service — fall back to a free one and say so
+    // loudly, since that launch will not see the stored calibration.
+    server.once('error', (e) => {
+      if (e.code !== 'EADDRINUSE') { reject(e); return; }
+      console.warn(`[shell] port ${PORT} is in use; falling back to a random port — stored calibration will NOT load this launch`);
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    });
+    server.listen(PORT, '127.0.0.1', () => resolve(server.address().port));
   });
 }
+
+const PORT = 47817;
 
 // The projector is the display that is not the one with the desktop on it.
 function installationDisplay() {
@@ -98,6 +114,13 @@ async function createWindow() {
 
   win.loadURL(`http://127.0.0.1:${port}/`);
   win.on('closed', () => { win = null; });
+
+  // F12 opens the console. The packaged app has no other way to read what the
+  // calibration passes log, and a report of "could not see the screen" with no
+  // numbers behind it cannot be diagnosed from a distance.
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
+  });
 
   // Never navigate away or spawn windows; this is a kiosk.
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });

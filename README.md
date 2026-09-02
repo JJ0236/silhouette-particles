@@ -78,6 +78,29 @@ button could not work on a fresh config; and the block centre for dropped low
 bits was not clamped to the axis, discarding the right and bottom edges — the
 ones the operator is told to aim at.
 
+**Coverage counted the wrong thing, so a good decode failed its own gate.** A
+camera pixel that had to drop low bits has located a BLOCK of cells, not one,
+but the inversion scattered it onto the block's centre cell only. On a wall the
+camera resolves to 8x8-cell blocks that is one cell in sixty-four, so
+"coverage" came out near 1-2% for a map that was correct to a pixel, and the
+wizard's 5% acceptance gate called it "no patterns decoded". At quarter framing
+the real rig sat right on that gate and flipped with focus and noise. Pixels now
+claim the whole block they were narrowed to, positions are interpolated between
+block centroids, and coverage means the fraction of the screen the camera saw.
+The hole fill also runs to completion: a fixed 24 passes left far cells at
+(0,0), the sensor's corner, and the warp read the wrong part of the room there.
+
+**Sensor noise clears the contrast floor in a dim room.** Tens of thousands of
+pixels that never saw the screen decode to random cells, and one is enough to
+drag a block of the map across the room. A pixel is now rejected when its
+position disagrees with the median of its decoded neighbours; the report counts
+them as "disagreed with the pixels beside them".
+
+`test/structured-rig.test.mjs` runs the whole decode against this rig's
+geometry — 720x134 grid, screen filling a quarter to a half of a 960x540 decode,
+box-filtered camera pixels, blur, noise — so that future changes are judged
+against the wall the piece actually hangs on.
+
 ### If the screen barely decodes
 
 The failure that matters is auto-exposure. Using a full-white and a full-black
@@ -466,6 +489,19 @@ different responses. Version and update state are also logged to the console.
 
 Only the installed app updates — not a copy run from source — and it needs
 internet at launch.
+
+### Why calibration did not survive a relaunch
+
+The shell serves the page on loopback, and it used to let the OS pick the port.
+The port is part of the origin, and localStorage, IndexedDB and Chromium's
+per-origin camera device IDs are all keyed on the origin — so every launch was
+a fresh origin that had never been calibrated. The corner quad, the measured
+geometry and the photometric map were all stored faithfully, into a bucket
+nothing would ever read again. It now serves on a fixed port (47817) and warns
+if that port is taken, since that launch will not see the stored calibration.
+
+**F12** opens the console in the packaged app. The calibration passes log what
+they measured, and the camera logs the mode and exposure it was actually granted.
 
 ### First install
 

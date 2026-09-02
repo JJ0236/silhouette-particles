@@ -53,6 +53,14 @@ export function grayDecodeFrom(g, bits, floor, limit) {
   return mid < x ? x : mid;
 }
 
+// The block of the axis a decode that dropped `floor` low bits can narrow the
+// position to: [start, end), clamped to the axis.
+export function blockOf(centre, floor, limit) {
+  const block = 1 << floor;
+  const start = Math.floor(centre / block) * block;
+  return [Math.min(start, limit), Math.min(start + block, limit)];
+}
+
 export function grayDecode(g, bits) {
   let x = g;
   for (let s = 1; s < bits; s <<= 1) x ^= x >> s;
@@ -169,12 +177,26 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     accN++;
   }
 
-  function finish({ minContrast = 0.04, fillIters = 24 } = {}) {
+  // A camera pixel that had to drop `floor` low bits has not located a cell:
+  // it has located a BLOCK of cells, and it is somewhere in there. The
+  // inversion has to honour that. Scattering every such pixel onto the block's
+  // centre cell — the previous behaviour — left every other cell in the block
+  // untouched, so "coverage" counted one cell in sixty-four on a rig where the
+  // camera could plainly see the whole screen, and the wizard's acceptance
+  // gate then reported "no patterns decoded" for a decode that was correct to a
+  // pixel. On the real wall this sat right on the gate and flipped with focus
+  // and noise. Coverage now means what it says: the fraction of the screen
+  // some camera pixel was seen to fall within.
+  //
+  // Positions come from the block CENTROIDS (mean camera position of the
+  // pixels in a block), interpolated with a tent kernel one block wide. On a
+  // regular lattice of blocks that is exactly bilinear interpolation between
+  // centres; where fine and coarse pixels mix, the normalisation makes it a
+  // sensible weighted blend rather than a choice.
+  function finish({ minContrast = 0.04, fillIters = w + h } = {}) {
     flushHold();   // the last invert hold has no following spec to trigger it
 
     const N = w * h;
-    const sumU = new Float32Array(N), sumV = new Float32Array(N), cnt = new Float32Array(N);
-    let decoded = 0, deepestX = 0, deepestY = 0;
     let rejContrast = 0, rejBlockX = 0, rejBlockY = 0, rejRange = 0, used = 0;
     const maxBlockX = Math.max(2, w * MAX_BLOCK_FRAC);
     const maxBlockY = Math.max(2, h * MAX_BLOCK_FRAC);
@@ -185,38 +207,123 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
     for (let b = 0; b < seq.bitsX; b++) if (!doneX[b]) missX = b + 1;
     for (let b = 0; b < seq.bitsY; b++) if (!doneY[b]) missY = b + 1;
 
-    for (let cy = 0; cy < camH; cy++) {
-      for (let cx = 0; cx < camW; cx++) {
-        const i = cy * camW + cx;
-        if (swing[i] < minContrast) { rejContrast++; continue; }
-        const thr = Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION);
-        let fx = missX, fy = missY;
-        for (let b = 0; b < seq.bitsX; b++) if (magX[b * n + i] / 255 < thr) fx = Math.max(fx, b + 1);
-        for (let b = 0; b < seq.bitsY; b++) if (magY[b * n + i] / 255 < thr) fy = Math.max(fy, b + 1);
-        if ((1 << fx) > maxBlockX) { rejBlockX++; continue; }
-        if ((1 << fy) > maxBlockY) { rejBlockY++; continue; }
-        const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx, w);
-        const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy, h);
-        if (dx < 0 || dx >= w || dy < 0 || dy >= h) { rejRange++; continue; }
-        used++;
-        if (fx > deepestX) deepestX = fx;
-        if (fy > deepestY) deepestY = fy;
-        const d = dy * w + dx;
-        sumU[d] += cx / (camW - 1);
-        sumV[d] += cy / (camH - 1);
-        cnt[d] += 1;
-        decoded++;
+    // Per-pixel decode, kept so the scatter can be decided once every pixel is
+    // known. Centre cell, or -1 when the pixel was rejected.
+    const pdx = new Int32Array(n).fill(-1), pdy = new Int32Array(n).fill(-1);
+    const pfx = new Uint8Array(n), pfy = new Uint8Array(n);
+    const histX = new Uint32Array(seq.bitsX + 1), histY = new Uint32Array(seq.bitsY + 1);
+
+    for (let i = 0; i < n; i++) {
+      if (swing[i] < minContrast) { rejContrast++; continue; }
+      const thr = Math.max(MIN_BIT_SWING, swing[i] * BIT_FRACTION);
+      let fx = missX, fy = missY;
+      for (let b = 0; b < seq.bitsX; b++) if (magX[b * n + i] / 255 < thr) fx = Math.max(fx, b + 1);
+      for (let b = 0; b < seq.bitsY; b++) if (magY[b * n + i] / 255 < thr) fy = Math.max(fy, b + 1);
+      if ((1 << fx) > maxBlockX) { rejBlockX++; continue; }
+      if ((1 << fy) > maxBlockY) { rejBlockY++; continue; }
+      const dx = grayDecodeFrom(codeX[i], seq.bitsX, fx, w);
+      const dy = grayDecodeFrom(codeY[i], seq.bitsY, fy, h);
+      if (dx < 0 || dx >= w || dy < 0 || dy >= h) { rejRange++; continue; }
+      pdx[i] = dx; pdy[i] = dy; pfx[i] = fx; pfy[i] = fy;
+    }
+
+    // A pixel has to agree with its neighbours. In a dim room the sensor's
+    // own noise clears the contrast floor on plenty of pixels that never saw
+    // the screen at all, and each of those decodes to a RANDOM cell — one
+    // stray pixel lands a block of the map hundreds of pixels away. The
+    // screen's pixels, by contrast, decode within a block or so of the pixels
+    // beside them, because the surface is continuous. So: reject a pixel
+    // whose position is far from the median of its decoded 3x3 neighbours, or
+    // that has too few decoded neighbours to judge.
+    let rejStray = 0;
+    const keep = new Uint8Array(n);
+    const nx = [], ny = [];
+    for (let i = 0; i < n; i++) {
+      if (pdx[i] < 0) continue;
+      const cx = i % camW, cy = (i / camW) | 0;
+      nx.length = 0; ny.length = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = cy + dy; if (yy < 0 || yy >= camH) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = cx + dx; if ((!dx && !dy) || xx < 0 || xx >= camW) continue;
+          const j = yy * camW + xx;
+          if (pdx[j] >= 0) { nx.push(pdx[j]); ny.push(pdy[j]); }
+        }
+      }
+      if (nx.length < 3) { rejStray++; continue; }
+      nx.sort((a, b) => a - b); ny.sort((a, b) => a - b);
+      const mx = nx[nx.length >> 1], my = ny[ny.length >> 1];
+      // Neighbouring camera pixels are a few cells apart on the screen, plus
+      // whatever the block quantisation adds on either side.
+      const tolX = 2 * Math.max(4, 1 << pfx[i]) + 4, tolY = 2 * Math.max(4, 1 << pfy[i]) + 4;
+      if (Math.abs(pdx[i] - mx) > tolX || Math.abs(pdy[i] - my) > tolY) { rejStray++; continue; }
+      keep[i] = 1;
+      histX[pfx[i]]++; histY[pfy[i]]++;
+      used++;
+    }
+    for (let i = 0; i < n; i++) if (!keep[i]) pdx[i] = -1;
+
+    // Knots: one per (centre cell, floor pair). Two pixels with different
+    // floors can share a centre cell while meaning blocks of different sizes,
+    // so the floors are part of the key.
+    const knots = new Map();
+    for (let i = 0; i < n; i++) {
+      if (pdx[i] < 0) continue;
+      const key = ((pdy[i] * w + pdx[i]) * 16 + pfx[i]) * 16 + pfy[i];
+      let k = knots.get(key);
+      if (!k) { k = { x: pdx[i], y: pdy[i], fx: pfx[i], fy: pfy[i], su: 0, sv: 0, c: 0 }; knots.set(key, k); }
+      k.su += (i % camW) / (camW - 1);
+      k.sv += ((i / camW) | 0) / (camH - 1);
+      k.c += 1;
+    }
+
+    const wU = new Float32Array(N), wV = new Float32Array(N), wS = new Float32Array(N);
+    const valid = new Uint8Array(N);
+    for (const k of knots.values()) {
+      const [bx0, bx1] = blockOf(k.x, k.fx, w), [by0, by1] = blockOf(k.y, k.fy, h);
+      const bw = bx1 - bx0, bh = by1 - by0;
+      // The block itself was SEEN.
+      for (let y = by0; y < by1; y++) for (let x = bx0; x < bx1; x++) valid[y * w + x] = 1;
+      // Tent one block wide about the centroid, weighted by pixels per cell so
+      // a coarse knot spread over many cells does not drown a fine one.
+      const u = k.su / k.c, v = k.sv / k.c, wt = k.c / (bw * bh);
+      const cx = bx0 + (bw - 1) / 2, cy = by0 + (bh - 1) / 2;
+      const x0 = Math.max(0, Math.ceil(cx - bw)), x1 = Math.min(w - 1, Math.floor(cx + bw));
+      const y0 = Math.max(0, Math.ceil(cy - bh)), y1 = Math.min(h - 1, Math.floor(cy + bh));
+      for (let y = y0; y <= y1; y++) {
+        const ty = 1 - Math.abs(y - cy) / bh;
+        if (ty <= 0) continue;
+        for (let x = x0; x <= x1; x++) {
+          const tx = 1 - Math.abs(x - cx) / bw;
+          if (tx <= 0) continue;
+          const d = y * w + x, g = wt * tx * ty;
+          wU[d] += u * g; wV[d] += v * g; wS[d] += g;
+        }
       }
     }
 
     const mapU = new Float32Array(N), mapV = new Float32Array(N);
-    const valid = new Uint8Array(N);
+    const filled = new Uint8Array(N);
     let seen = 0;
     for (let d = 0; d < N; d++) {
-      if (cnt[d] > 0) { mapU[d] = sumU[d] / cnt[d]; mapV[d] = sumV[d] / cnt[d]; valid[d] = 1; seen++; }
+      if (wS[d] > 0) { mapU[d] = wU[d] / wS[d]; mapV[d] = wV[d] / wS[d]; filled[d] = 1; }
+      if (valid[d]) seen++;
     }
+    const decoded = used;
 
-    const filled = Uint8Array.from(valid);
+    // Typical location block: the floor most pixels settled at, not the worst.
+    const medianFloor = (hist, total) => {
+      let acc = 0;
+      for (let f = 0; f < hist.length; f++) { acc += hist[f]; if (acc * 2 >= total) return f; }
+      return 0;
+    };
+    const deepestX = used ? medianFloor(histX, used) : 0;
+    const deepestY = used ? medianFloor(histY, used) : 0;
+
+    // Cells no block reached — off the frame's edge, behind a speaker — take
+    // the nearest measured values, iterated until nothing is left. A fixed
+    // iteration cap used to leave the far cells at (0,0), the sensor's corner,
+    // and the warp then read the wrong part of the room for them.
     for (let it = 0; it < fillIters; it++) {
       let added = 0;
       for (let y = 0; y < h; y++) {
@@ -249,7 +356,7 @@ export function createDecoder({ w, h, camW, camH, holdFrames = 2 }) {
       contrast: { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: sorted[sorted.length - 1], threshold: minContrast },
       resolution: { xCells: 1 << deepestX, yCells: 1 << deepestY, bitsX: seq.bitsX, bitsY: seq.bitsY },
       reach: reachOf(valid, w, h),
-      rejects: { contrast: rejContrast, blockX: rejBlockX, blockY: rejBlockY, range: rejRange, used },
+      rejects: { contrast: rejContrast, blockX: rejBlockX, blockY: rejBlockY, range: rejRange, stray: rejStray, used },
       blocks: { maxX: maxBlockX, maxY: maxBlockY },
       // Bits whose pair never completed. A non-empty list means frames were
       // dropped or misattributed, and says exactly which — far more actionable
