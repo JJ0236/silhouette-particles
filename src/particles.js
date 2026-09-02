@@ -8,6 +8,7 @@ import { sample, gradient } from './field.js';
 // panel reads sensibly without the physics constants leaking into the UI.
 const PUSH_SCALE      = 0.02;
 const PULL_SCALE      = 0.0006;
+const PARK_CELLS      = 2.5;    // how far outside the edge an ejected particle parks
 const DRIFT_SCALE     = 0.00030;
 
 export function createParticles(count) {
@@ -43,7 +44,6 @@ export function createParticles(count) {
     const push   = settings.push * PUSH_SCALE * gain;
     // Pull toward the outline, per cell of distance, in normalised units.
     const pull   = settings.outlinePull * PULL_SCALE * gain;
-    const reach  = settings.outlineReach;
     const ret    = settings.returnForce;
     const damp   = settings.damping;
     const drift  = settings.drift * DRIFT_SCALE;
@@ -64,11 +64,10 @@ export function createParticles(count) {
 
       }
 
-      // The outline is an attractor. Inside the body a particle is driven
-      // OUT to the edge; just outside it is drawn back IN to the edge; on the
-      // edge it settles. So a body sweeps its interior clean and wears its
-      // particles as a rim, instead of them sitting inside the silhouette
-      // where the return-to-rest pull used to hold them.
+      // The body sweeps itself clean. A particle INSIDE it is driven out to
+      // the edge; once it is just outside it parks there, rest suspended, until
+      // the body moves away. Nothing outside is ever pulled in: a particle
+      // beside a person is left exactly where it is.
       //
       // The signed distance field points at the edge from everywhere, where
       // the old mask-gradient nudge was zero in the interior — which is why
@@ -76,19 +75,19 @@ export function createParticles(count) {
       let held = 0;
       if (seg.sdf) {
         const d = sample(seg.sdf, MASK_W, MASK_H, u, v);
-        if (d < reach) {
+        if (d < 0) {
           gradient(seg.sdf, MASK_W, MASK_H, u, v, g);
-          // Unit direction toward increasing distance (outward); the force
-          // is toward d = 0, capped so a deep interior is a shove, not a slingshot.
+          // Outward along the field, hardest deep inside, never a slingshot.
           const gl = Math.hypot(g[0], g[1]);
           if (gl > 1e-6) {
-            const towardEdge = -Math.max(-4, Math.min(4, d)) * pull / gl;
-            ax += g[0] * towardEdge;
-            ay += g[1] * towardEdge;
+            const out = Math.min(4, -d) * pull / gl;
+            ax += g[0] * out;
+            ay += g[1] * out;
           }
-          // Within reach the outline owns the particle: rest is suspended so
-          // it can stay on the line, and fully so inside the body.
-          held = d < 0 ? 1 : 1 - d / reach;
+          held = 1;
+        } else if (d < PARK_CELLS) {
+          // Just outside: park. No force either way, and no drift home.
+          held = 1;
         }
       }
 

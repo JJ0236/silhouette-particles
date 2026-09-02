@@ -36,6 +36,16 @@ saved), loop check. The wizard saves the corner state and settings as soon as
 geometry (coverage > 5%) and photometry succeed, then arms a stand-in pass
 (Start / Skip), applies its thresholds, and shows all rows with a Close button.
 
+## Revision, same day
+
+- Particles: no inward pull. Inside the body a particle is driven out; once
+  0..2.5 cells outside it parks (rest suspended) until the body moves away.
+  Particles already outside are never touched. `outlineReach` removed; the
+  detector's distance cap is a fixed 16 cells.
+- Blind cells: `gateUnseen` strikes cells the geometry map never saw directly,
+  plus a two-cell margin, from the photometric `observable` mask. Fixes the
+  permanent false outlines along the band where the speakers hang.
+
 ## Tests
 
 `test/contour.test.mjs`: disc traces to one loop of the right perimeter with

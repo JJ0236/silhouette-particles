@@ -1,6 +1,6 @@
 import { MASK_W, MASK_H } from './config.js';
 import { specAt, holdAgeAt, sameHold } from './timeline.js';
-import { createDecoder, patternFor, smoothMap } from './structured.js';
+import { createDecoder, patternFor, smoothMap, gateUnseen } from './structured.js';
 import { patchLayout, calibrationSequence, createAccumulator } from './photometric.js';
 import { mSequence, latencySchedule, crossCorrelate } from './latency.js';
 import { contourBand } from './field.js';
@@ -170,6 +170,7 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
   const obs = new Uint8Array(N * 3);
 
   let photo = null;
+  let geoMap = null;      // the measured geometry, for what it says the camera never saw
   let depth = 0;          // >0 while a pass is on screen
   let phase = null;
   let cancelled = false;
@@ -417,6 +418,7 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       map.meta = { ...expectedMeta(), kind: 'structured' };
       if (map.coverage > 0.05) {
         warp.setMap(map);
+        geoMap = map;
         await storeMap(map);
       }
       return map;
@@ -658,6 +660,7 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
       if (!raw || raw.w !== MASK_W || raw.h !== MASK_H) return null;
       if (expect && raw.meta?.deviceId && expect.deviceId && raw.meta.deviceId !== expect.deviceId) return null;
       warp.setMap(raw);
+      geoMap = raw;
       return raw;
     } catch { return null; }
   }
@@ -748,6 +751,11 @@ export function createPhotocal({ renderer, camera, warp, calib, ring, occlusion,
     if (!ok) return null;
 
     const p = acc.finish();
+    // What the camera never saw, it must not judge. See gateUnseen.
+    if (geoMap && geoMap.valid && geoMap.w === W && geoMap.h === H) {
+      const struck = gateUnseen(p.observable, geoMap.valid, W, H, 2);
+      console.info(`[photocal] ${struck} cells the camera never saw directly are excluded from detection`);
+    }
     p.meta = { ...p.meta, ...expectedMeta() };
     // Not stored means it will not survive a reload; the wizard says so.
     p.stored = await storePhoto(p);

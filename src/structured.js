@@ -398,6 +398,36 @@ function reachOf(valid, w, h) {
   };
 }
 
+// Cells the camera never directly saw must not be believed by the detector.
+//
+// The hole fill gives an unseen cell — behind a speaker, above the frame — the
+// camera position of its nearest SEEN neighbour, so the warp has somewhere to
+// look. That is right for the warp and wrong for detection: the pixel it looks
+// at shows the neighbour's content, the prediction is this cell's content, the
+// two disagree whenever the wall is not flat grey, and the disagreement reads
+// as a body standing there. On the real wall that drew permanent outlines
+// along the top band where the speakers hang. Unseen cells, plus a margin for
+// the coarse blocks at their edge, are struck from `observable`.
+export function gateUnseen(observable, valid, w, h, margin = 2) {
+  let struck = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!observable[i]) continue;
+      let unseen = false;
+      for (let dy = -margin; dy <= margin && !unseen; dy++) {
+        const yy = y + dy; if (yy < 0 || yy >= h) continue;
+        for (let dx = -margin; dx <= margin; dx++) {
+          const xx = x + dx; if (xx < 0 || xx >= w) continue;
+          if (!valid[yy * w + xx]) { unseen = true; break; }
+        }
+      }
+      if (unseen) { observable[i] = 0; struck++; }
+    }
+  }
+  return struck;
+}
+
 export function smoothMap(map, radius = 2) {
   const { w, h, mapU, mapV } = map;
   for (const field of [mapU, mapV]) {

@@ -155,6 +155,15 @@ the frame edge, or blocked by a speaker — as a span and a blocked fraction. Th
 cells are excluded from the detector entirely, so **nobody standing in front of
 them will register**, and it is better to know that than to wonder.
 
+That exclusion has to be explicit, and once was not. The hole fill points an
+unseen cell at its nearest seen neighbour's camera pixel so the warp has
+somewhere to look; photometry then finds that pixel bright and marks the cell
+observable; in use, the prediction is this cell's content and the camera shows
+the neighbour's, and the disagreement reads as a body. On the real wall that
+drew permanent outlines along the top band where the speakers hang. The
+photometric pass now strikes every cell the geometry map says was never seen,
+plus a two-cell margin, from `observable`, and logs how many.
+
 ### Performance
 
 Two things dominate, and both are tunable.
@@ -386,12 +395,11 @@ webcam frame
   back into itself. Only motion inside your body counts as a push — which also means a
   person walking past in the background can't disturb it.
 - **`particles.js`** — each particle samples the flow field, gets thrown, drifts, and
-  eases back toward its rest position. The outline is an attractor: a signed
-  distance field from the body (`distance.js`) drives particles inside it out to
-  the edge, draws particles just outside back in, and suspends the return-to-rest
-  pull while they are held, so a body sweeps its interior clean and wears its
-  particles as a rim. `outline pull` and `outline reach` in the panel set the
-  strength and the capture distance in cells.
+  eases back toward its rest position. A body sweeps itself clean: a signed
+  distance field from the mask (`distance.js`) drives every particle inside it
+  out to the edge, where it parks a couple of cells outside with its return-to-rest
+  pull suspended until the body moves away. Nothing outside the body is ever
+  pulled in. `body sweeps out` in the panel sets the strength.
 - **`contour.js`** — the outline itself is a vector stroke, not a raster band. The
   band was painted one detector cell at a time (about eight wall pixels) and read
   as chunky and wavering; marching squares on the smoothed mask puts each vertex

@@ -256,7 +256,8 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
   const bin = new Uint8Array(N);
   const rim = new Float32Array(N);
   const influence = new Float32Array(N);
-  const sdf = new Float32Array(N).fill(16);
+  const SDF_CAP = 16;   // cells outside the body past which the field is flat
+  const sdf = new Float32Array(N).fill(SDF_CAP);
   const motion = new Float32Array(NW);
   const fast = new Float32Array(N);
 
@@ -344,7 +345,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
   // the previous-mask exclusion clean for the next frame.
   function finishIdle() {
     mask.fill(0); fast.fill(0); rim.fill(0); influence.fill(0); motion.fill(0);
-    bin.fill(0); sdf.fill(cfg('outlineReach') ?? 16);
+    bin.fill(0); sdf.fill(SDF_CAP);
     self.coverage = 0;
     diag.veto = false; diag.vetoReason = '';
     for (const m of medHist) m.fill(0);
@@ -361,7 +362,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
     contourBand(mask, rim, w, h, cfg('rimWidth'), cfg('rimGain'));
     boxBlur(mask, influence, w, h, cfg('influence'), tmpF);
     // The particles' view of the body: how far to the edge, and which way.
-    signedDistance(bin, w, h, sdf, cfg('outlineReach'));
+    signedDistance(bin, w, h, sdf, SDF_CAP);
     const iw = workW > 1 ? 1 / (workW - 1) : 0, ih = workH > 1 ? 1 / (workH - 1) : 0;
     for (let y = 0; y < workH; y++) {
       const v = y * ih;
@@ -665,7 +666,7 @@ export function createOcclusion({ w = 480, h = 270, workW = 160, workH = 90, set
 
   function reset() {
     mask.fill(0); bin.fill(0); rim.fill(0); influence.fill(0); motion.fill(0); fast.fill(0);
-    sdf.fill(cfg('outlineReach') ?? 16);
+    sdf.fill(SDF_CAP);
     for (const m of medHist) m.fill(0);
     medHead = 0;
     gains.fill(1);
